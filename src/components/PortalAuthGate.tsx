@@ -49,8 +49,13 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
   }, [supabaseUser?.id]);
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const errDesc = params.get('error_description') || params.get('error');
+    const searchParams = new URLSearchParams(window.location.search);
+    const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const errDesc =
+      searchParams.get('error_description') ||
+      hashParams.get('error_description') ||
+      searchParams.get('error') ||
+      hashParams.get('error');
     if (errDesc) {
       setError(decodeURIComponent(errDesc.replace(/\+/g, ' ')));
       window.history.replaceState({}, document.title, window.location.pathname);
@@ -145,7 +150,7 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
         provider: 'google',
         options: {
           redirectTo: window.location.origin,
-          skipBrowserRedirect: isInIframe,
+          skipBrowserRedirect: true,
           queryParams: {
             prompt: 'select_account',
           },
@@ -156,11 +161,25 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
         throw authErr;
       }
 
-      if (isInIframe && data?.url) {
-        setIframeAuthUrl(data.url);
+      if (!data?.url) {
+        throw new Error('Could not build Google login URL. Check your Supabase credentials.');
+      }
+
+      const authUrl = new URL(data.url);
+      authUrl.searchParams.delete('skip_http_redirect');
+      authUrl.pathname = '/auth/v1/authorize';
+      const cleanAuthUrl = authUrl.toString();
+
+      if (isInIframe) {
+        setIframeAuthUrl(cleanAuthUrl);
+      } else {
+        window.location.assign(cleanAuthUrl);
       }
     } catch (err: any) {
-      setError(err?.message || 'Could not start Google Sign-In. Please check your Supabase Google provider settings.');
+      setError(
+        err?.message ||
+          'Could not start Google Sign-In. Please check your Supabase Google provider settings.'
+      );
     } finally {
       setLoading(false);
     }

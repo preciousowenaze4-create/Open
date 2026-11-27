@@ -4,30 +4,54 @@ import { DomainRecord, ShopOrder, SupportTicket, UserProfile } from './types';
 declare const __SUPABASE_URL__: string | undefined;
 declare const __SUPABASE_ANON_KEY__: string | undefined;
 
+function normalizeSupabaseUrl(raw: string): string {
+  let cleaned = raw.trim().replace(/^["']+|["']+$/g, '').trim();
+  if (!cleaned) return '';
+  if (!/^https?:\/\//i.test(cleaned)) {
+    cleaned = cleaned.includes('.') ? `https://${cleaned}` : `https://${cleaned}.supabase.co`;
+  }
+  try {
+    return new URL(cleaned).origin;
+  } catch {
+    return cleaned.replace(/\/+$/, '');
+  }
+}
+
+function normalizeSupabaseKey(raw: string): string {
+  return raw.trim().replace(/^["']+|["']+$/g, '').trim();
+}
+
 function readInitialSupabaseEnv(): { url: string; anonKey: string } {
-  const url =
+  const url = normalizeSupabaseUrl(
     (import.meta.env.VITE_SUPABASE_URL as string | undefined) ||
-    (typeof __SUPABASE_URL__ !== 'undefined' ? __SUPABASE_URL__ : '') ||
-    '';
-  const anonKey =
+      (typeof __SUPABASE_URL__ !== 'undefined' ? __SUPABASE_URL__ : '') ||
+      ''
+  );
+  const anonKey = normalizeSupabaseKey(
     (import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined) ||
-    (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ||
-    (typeof __SUPABASE_ANON_KEY__ !== 'undefined' ? __SUPABASE_ANON_KEY__ : '') ||
-    '';
-  return { url: url.trim(), anonKey: anonKey.trim() };
+      (import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string | undefined) ||
+      (typeof __SUPABASE_ANON_KEY__ !== 'undefined' ? __SUPABASE_ANON_KEY__ : '') ||
+      ''
+  );
+  return { url, anonKey };
 }
 
 let currentConfig = readInitialSupabaseEnv();
+
+function buildClient(url: string, anonKey: string): SupabaseClient {
+  return createClient(url, anonKey, {
+    auth: {
+      flowType: 'implicit',
+      detectSessionInUrl: true,
+      persistSession: true,
+      autoRefreshToken: true,
+    },
+  });
+}
+
 let clientInstance: SupabaseClient | null =
   currentConfig.url && currentConfig.anonKey
-    ? createClient(currentConfig.url, currentConfig.anonKey, {
-        auth: {
-          flowType: 'pkce',
-          detectSessionInUrl: true,
-          persistSession: true,
-          autoRefreshToken: true,
-        },
-      })
+    ? buildClient(currentConfig.url, currentConfig.anonKey)
     : null;
 
 export function getSupabaseClient(): SupabaseClient | null {
@@ -44,18 +68,12 @@ export async function ensureSupabaseInitialized(): Promise<SupabaseClient | null
     const res = await fetch('/api/public-config');
     if (res.ok) {
       const data = await res.json();
-      const url = typeof data.supabaseUrl === 'string' ? data.supabaseUrl.trim() : '';
-      const anonKey = typeof data.supabaseAnonKey === 'string' ? data.supabaseAnonKey.trim() : '';
+      const url = typeof data.supabaseUrl === 'string' ? normalizeSupabaseUrl(data.supabaseUrl) : '';
+      const anonKey =
+        typeof data.supabaseAnonKey === 'string' ? normalizeSupabaseKey(data.supabaseAnonKey) : '';
       if (url && anonKey) {
         currentConfig = { url, anonKey };
-        clientInstance = createClient(url, anonKey, {
-          auth: {
-            flowType: 'pkce',
-            detectSessionInUrl: true,
-            persistSession: true,
-            autoRefreshToken: true,
-          },
-        });
+        clientInstance = buildClient(url, anonKey);
       }
     }
   } catch {

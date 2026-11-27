@@ -5,21 +5,40 @@ import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
+function normalizeSupabaseUrl(raw: string): string {
+  let cleaned = raw.trim().replace(/^["']+|["']+$/g, '').trim();
+  if (!cleaned) return '';
+  if (!/^https?:\/\//i.test(cleaned)) {
+    cleaned = cleaned.includes('.') ? `https://${cleaned}` : `https://${cleaned}.supabase.co`;
+  }
+  try {
+    return new URL(cleaned).origin;
+  } catch {
+    return cleaned.replace(/\/+$/, '');
+  }
+}
+
+function normalizeSupabaseKey(raw: string): string {
+  return raw.trim().replace(/^["']+|["']+$/g, '').trim();
+}
+
 export default defineConfig(({mode}) => {
   const env = loadEnv(mode, process.cwd(), '');
-  const supabaseUrl =
+  const supabaseUrl = normalizeSupabaseUrl(
     env.VITE_SUPABASE_URL ||
-    env.NEXT_PUBLIC_SUPABASE_URL ||
-    env.SUPABASE_URL ||
-    '';
-  const supabaseAnonKey =
+      env.NEXT_PUBLIC_SUPABASE_URL ||
+      env.SUPABASE_URL ||
+      ''
+  );
+  const supabaseAnonKey = normalizeSupabaseKey(
     env.VITE_SUPABASE_ANON_KEY ||
-    env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-    env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
-    env.SUPABASE_ANON_KEY ||
-    env.SUPABASE_PUBLISHABLE_KEY ||
-    '';
+      env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+      env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+      env.SUPABASE_ANON_KEY ||
+      env.SUPABASE_PUBLISHABLE_KEY ||
+      ''
+  );
 
   return {
     define: {

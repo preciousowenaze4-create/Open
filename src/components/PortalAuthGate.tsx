@@ -1,9 +1,14 @@
-import React, { useState } from 'react';
-import { signInWithPopup, User as FirebaseUser } from 'firebase/auth';
+import React, { useState, useEffect } from 'react';
+import {
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
+  User as FirebaseUser,
+} from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
 import { UserProfile } from '../types';
-import { ArrowRight, CheckCircle2, ShieldCheck } from 'lucide-react';
+import { ArrowRight, CheckCircle2, ShieldCheck, Copy, Check } from 'lucide-react';
 
 interface PortalAuthGateProps {
   firebaseUser: FirebaseUser | null;
@@ -22,6 +27,18 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
   const [workspaceHandle, setWorkspaceHandle] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [unauthorizedHost, setUnauthorizedHost] = useState('');
+  const [copiedHost, setCopiedHost] = useState(false);
+
+  useEffect(() => {
+    getRedirectResult(auth).catch((err: any) => {
+      if (err?.code === 'auth/unauthorized-domain') {
+        setUnauthorizedHost(window.location.hostname);
+      } else if (err?.message) {
+        setError(err.message);
+      }
+    });
+  }, []);
 
   if (!authReady) {
     return (
@@ -41,10 +58,28 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
   const handleGoogleSignIn = async () => {
     setLoading(true);
     setError('');
+    setUnauthorizedHost('');
     try {
       await signInWithPopup(auth, googleProvider);
     } catch (err: any) {
-      setError(err.message || 'Sign-in was cancelled. Please try again.');
+      if (err?.code === 'auth/unauthorized-domain') {
+        setUnauthorizedHost(window.location.hostname);
+        setError(
+          `Authorize "${window.location.hostname}" in Firebase Authentication -> Settings -> Authorized domains to sign in on this deployment URL.`
+        );
+      } else if (
+        err?.code === 'auth/popup-blocked' ||
+        err?.code === 'auth/operation-not-supported-in-this-environment'
+      ) {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch (redirErr: any) {
+          setError(redirErr?.message || 'Sign-in redirect failed.');
+        }
+      } else {
+        setError(err?.message || 'Sign-in was cancelled. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -103,7 +138,7 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
             <img
               src="/pwa-192x192.png"
               alt="OpenHost"
-              className="w-11 h-11 rounded-2xl shadow-sm object-cover border border-slate-200"
+              className="w-11 h-11 rounded-2xl shadow-sm object-cover"
             />
             <div>
               <span className="text-xl font-extrabold tracking-tight text-slate-900 block leading-none">
@@ -115,12 +150,29 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
 
           <h1 className="text-2xl font-bold text-slate-900 mb-2">Welcome to Client Area</h1>
           <p className="text-sm text-slate-600 mb-6 leading-relaxed">
-            Sign up or sign in to claim free domains, manage custom nameservers, and connect your Cloudflare accounts in real time.
+            Sign up or sign in to claim free domains, manage custom nameservers, and connect your cloud providers in real time.
           </p>
 
           {error && (
-            <div className="mb-4 p-3 rounded-xl bg-red-50 border border-red-200 text-red-700 text-xs">
-              {error}
+            <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs space-y-2">
+              <p>{error}</p>
+              {unauthorizedHost && (
+                <div className="flex items-center justify-between gap-2 bg-white border border-red-200 rounded-lg px-2.5 py-1.5">
+                  <span className="font-mono text-[11px] truncate">{unauthorizedHost}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(unauthorizedHost);
+                      setCopiedHost(true);
+                      setTimeout(() => setCopiedHost(false), 2000);
+                    }}
+                    className="inline-flex items-center gap-1 text-blue-600 font-semibold shrink-0 cursor-pointer"
+                  >
+                    {copiedHost ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copiedHost ? 'Copied' : 'Copy Host'}</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -141,7 +193,7 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
             </div>
             <div className="flex items-center gap-2">
               <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
-              <span>Independent Cloudflare & nameserver control per domain</span>
+              <span>Independent provider & nameserver control per domain</span>
             </div>
           </div>
         </div>
@@ -157,7 +209,7 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
             <img
               src="/pwa-192x192.png"
               alt="OpenHost"
-              className="w-10 h-10 rounded-xl shadow-xs object-cover border border-slate-200"
+              className="w-10 h-10 rounded-xl shadow-xs object-cover"
             />
             <span className="text-lg font-extrabold tracking-tight text-slate-900">
               Open<span className="text-amber-500">Host</span>

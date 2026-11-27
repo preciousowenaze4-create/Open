@@ -1,0 +1,12 @@
+{
+  "buildCommand": "vite build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api" },
+    { "source": "/site/(.*)", "destination": "/api" },
+    {
+      "source": "/((?!api/|assets/|pwa-|apple-touch-icon|icon|manifest|sw|workbox).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

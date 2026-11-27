@@ -9,6 +9,7 @@ import {
   mapProfileRow,
   mapTicketRow,
 } from './supabase';
+import { fetchJson } from './utils/api';
 import {
   DomainRecord,
   DomainSearchResult,
@@ -39,7 +40,7 @@ import {
   AffiliatesView,
   BillingView,
 } from './components/PortalSections';
-import { CheckCircle2, X } from 'lucide-react';
+import { CheckCircle2, ExternalLink, X } from 'lucide-react';
 
 function PortalAppContent() {
   const [supabaseReady, setSupabaseReady] = useState(isSupabaseConfigured());
@@ -61,6 +62,7 @@ function PortalAppContent() {
   );
   const [acquiringDomain, setAcquiringDomain] = useState<string | null>(null);
   const [toast, setToast] = useState('');
+  const [toastLink, setToastLink] = useState('');
 
   const loadUserWorkspace = useCallback(async (userId: string) => {
     const supabase = getSupabaseClient();
@@ -284,8 +286,9 @@ function PortalAppContent() {
   const handleBuildSiteQuick = async (domain: DomainRecord) => {
     if (!profile) return;
     setToast(`Publishing website for ${domain.domain}...`);
+    setToastLink('');
     try {
-      const res = await fetch('/api/sites/build', {
+      const data = await fetchJson<{ siteUrl: string }>('/api/sites/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -295,8 +298,6 @@ function PortalAppContent() {
           ownerName: profile.displayName,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not build site.');
 
       const supabase = getSupabaseClient();
       if (supabase) {
@@ -311,10 +312,14 @@ function PortalAppContent() {
       }
 
       setToast(`Website published for ${domain.domain}!`);
-      setTimeout(() => setToast(''), 4000);
-      window.open(data.siteUrl, '_blank', 'noopener,noreferrer');
+      setToastLink(data.siteUrl);
+      setTimeout(() => {
+        setToast('');
+        setToastLink('');
+      }, 8000);
     } catch (err: any) {
       setToast(err.message || 'Could not publish website.');
+      setToastLink('');
       setTimeout(() => setToast(''), 4000);
     }
   };
@@ -382,14 +387,28 @@ function PortalAppContent() {
       {toast && (
         <div className="max-w-5xl mx-auto w-full px-4 sm:px-6 pt-4">
           <div className="bg-blue-50 border border-blue-200 text-blue-900 px-4 py-3 rounded-xl flex items-center justify-between gap-3 text-xs font-medium">
-            <span className="flex items-center gap-2">
+            <span className="flex items-center gap-2 flex-wrap">
               <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
               <span>{toast}</span>
+              {toastLink && (
+                <a
+                  href={toastLink}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700"
+                >
+                  <span>Open Site</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
             </span>
             <button
               type="button"
-              onClick={() => setToast('')}
-              className="text-blue-500 hover:text-blue-800 cursor-pointer"
+              onClick={() => {
+                setToast('');
+                setToastLink('');
+              }}
+              className="text-blue-500 hover:text-blue-800 cursor-pointer shrink-0"
             >
               <X className="w-4 h-4" />
             </button>

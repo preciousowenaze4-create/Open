@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getSupabaseClient, mapDomainRow } from '../supabase';
+import { fetchJson } from '../utils/api';
 import { CloudflareDnsRecord, DomainRecord } from '../types';
 import { X, Cloud, Key, CheckCircle2, AlertCircle, Plus, Trash2, Loader2, Server } from 'lucide-react';
 
@@ -80,13 +81,12 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
 
   const loadExistingRecords = async (zoneId: string, token: string) => {
     try {
-      const res = await fetch('/api/cloudflare/dns/list', {
+      const data = await fetchJson('/api/cloudflare/dns/list', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ zoneId, apiToken: token }),
       });
-      const data = await res.json();
-      if (res.ok && data.records) setRecords(data.records);
+      if (data.records) setRecords(data.records);
     } catch {
       // ignore initial list failure
     }
@@ -104,13 +104,11 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
     setSuccess('');
 
     try {
-      const res = await fetch('/api/cloudflare/verify', {
+      const data = await fetchJson('/api/cloudflare/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apiToken: apiToken.trim() }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Verification failed.');
 
       if (selectedDomainObj) {
         onSaveSessionToken(selectedDomainObj.id, apiToken.trim());
@@ -165,7 +163,13 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
           createNewZone,
         }),
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        throw new Error(`Cloudflare connect failed (HTTP ${res.status}).`);
+      }
       if (!res.ok) {
         if (data.canCreateZone) setCanCreateZone(true);
         throw new Error(data.error || 'Could not connect Cloudflare zone.');
@@ -225,7 +229,7 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
     setLoading(true);
     setError('');
     try {
-      const res = await fetch('/api/cloudflare/dns/create', {
+      const data = await fetchJson('/api/cloudflare/dns/create', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -237,8 +241,6 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
           proxied: recType !== 'TXT' ? recProxied : false,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to add DNS record.');
 
       setRecords((prev) => [data.record, ...prev]);
       setRecContent('');
@@ -256,14 +258,14 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
 
     setLoading(true);
     try {
-      const res = await fetch('/api/cloudflare/dns/delete', {
+      await fetchJson('/api/cloudflare/dns/delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ zoneId, apiToken: apiToken.trim(), recordId }),
       });
-      if (res.ok) {
-        setRecords((prev) => prev.filter((r) => r.id !== recordId));
-      }
+      setRecords((prev) => prev.filter((r) => r.id !== recordId));
+    } catch (err: any) {
+      setError(err.message || 'Failed to delete record.');
     } finally {
       setLoading(false);
     }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { getSupabaseClient, mapDomainRow } from '../supabase';
+import { fetchJson } from '../utils/api';
 import { DomainRecord, PortalSection, SupportTicket, UserProfile } from '../types';
 import {
   Server,
@@ -56,7 +57,7 @@ export const PortalDashboard: React.FC<PortalDashboardProps> = ({
     setBuilding(true);
     setBuildError('');
     try {
-      const res = await fetch('/api/sites/build', {
+      const data = await fetchJson<{ siteUrl: string }>('/api/sites/build', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -66,8 +67,6 @@ export const PortalDashboard: React.FC<PortalDashboardProps> = ({
           ownerName: profile.displayName,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Could not build website.');
 
       const supabase = getSupabaseClient();
       if (supabase) {
@@ -82,7 +81,6 @@ export const PortalDashboard: React.FC<PortalDashboardProps> = ({
       }
 
       setBuilderOpen(false);
-      window.open(data.siteUrl, '_blank', 'noopener,noreferrer');
     } catch (err: any) {
       setBuildError(err.message || 'Website generation failed.');
     } finally {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { getSupabaseClient, mapDomainRow } from '../supabase';
+import { verifyNameserversRealTime } from '../utils/api';
 import { DomainRecord, NameserverVerificationResult, PortalSection } from '../types';
 import {
   Cloud,
@@ -189,22 +190,13 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
       let verifiedResult: NameserverVerificationResult | null = null;
 
       if (mode === 'custom') {
-        const res = await fetch('/api/dns/verify-nameservers', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            domain: activeDomain.domain,
-            mode: 'custom',
-            nameservers: payloadNs,
-            providerName: finalProviderName,
-            apiToken: sessionToken || undefined,
-          }),
+        verifiedResult = await verifyNameserversRealTime({
+          domain: activeDomain.domain,
+          mode: 'custom',
+          nameservers: payloadNs,
+          providerName: finalProviderName,
+          apiToken: sessionToken || undefined,
         });
-        const data = await res.json();
-        if (!res.ok) {
-          throw new Error(data.error || 'Could not verify nameservers.');
-        }
-        verifiedResult = data as NameserverVerificationResult;
         setVerification(verifiedResult);
       }
 

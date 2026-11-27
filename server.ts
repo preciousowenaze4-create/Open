@@ -1,7 +1,7 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import app from './server/app';
+import app from './server/app.js';
 
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DomainSearchResult, PortalSection } from '../types';
+import { getTldStatsRealTime, searchDomainsRealTime } from '../utils/api';
 import { Search, Globe, Check, XCircle, ArrowRight, Loader2, Filter, ExternalLink } from 'lucide-react';
 
 interface SearchViewProps {
@@ -28,8 +29,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    fetch('/api/domains/tlds/stats')
-      .then((r) => r.json())
+    getTldStatsRealTime()
       .then((d) => {
         if (d.ianaTotalCount) setIanaTotal(d.ianaTotalCount);
       })
@@ -69,27 +69,22 @@ export const SearchView: React.FC<SearchViewProps> = ({
     setError('');
 
     try {
-      const params = new URLSearchParams({
-        q: query,
+      const data = await searchDomainsRealTime({
+        query,
         mode: searchMode,
-        page: String(targetPage),
-        limit: '18',
-      });
-      if (filter.trim()) params.set('tldFilter', filter.trim());
-
-      const res = await fetch(`/api/domains/search?${params.toString()}`, {
+        page: targetPage,
+        limit: 18,
+        tldFilter: filter,
         signal: controller.signal,
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Search failed.');
 
       setResults((prev) => (append ? [...prev, ...data.results] : data.results));
       setPage(data.page);
       setHasMore(Boolean(data.hasMore));
       setTotalExtensions(data.totalExtensions || 0);
     } catch (err: any) {
-      if (err.name !== 'AbortError') {
-        setError(err.message || 'Unable to check domain availability right now.');
+      if (err?.name !== 'AbortError') {
+        setError(err?.message || 'Unable to check domain availability right now.');
       }
     } finally {
       setLoading(false);

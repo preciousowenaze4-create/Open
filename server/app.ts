@@ -771,7 +771,7 @@ app.get('/api/public-config', (_req, res) => {
   res.json({ supabaseUrl, supabaseAnonKey });
 });
 
-app.get('/site/:domain', (req, res) => {
+const handleServeSite = (req: express.Request, res: express.Response) => {
   const domainName = (req.params.domain || '').toLowerCase().trim();
   const site = publishedSites[domainName];
   if (!site) {
@@ -785,6 +785,13 @@ app.get('/site/:domain', (req, res) => {
   savePublishedSites(publishedSites);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(site.htmlContent);
+};
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, timestamp: new Date().toISOString() });
 });
+
+app.get('/site/:domain', handleServeSite);
+app.get('/api/site/:domain', handleServeSite);
 
 export default app;

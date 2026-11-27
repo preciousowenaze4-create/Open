@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { getSupabaseClient, mapDomainRow, mapTicketRow } from '../supabase';
+import { liveDnsCheckRealTime } from '../utils/api';
 import {
   DomainRecord,
   LiveDnsLookupResult,
@@ -36,9 +37,10 @@ export const ManageDnsView: React.FC<{
     if (!domainName) return;
     setLoading(true);
     try {
-      const res = await fetch(`/api/dns/live-check?domain=${encodeURIComponent(domainName)}`);
-      const data = await res.json();
-      if (res.ok) setLiveDns(data);
+      const data = await liveDnsCheckRealTime(domainName);
+      setLiveDns(data);
+    } catch {
+      // ignore lookup error
     } finally {
       setLoading(false);
     }

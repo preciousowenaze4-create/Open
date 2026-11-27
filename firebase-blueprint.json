@@ -1,0 +1,263 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Registered portal user profile and workspace preferences.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "workspaceHandle": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "maxLength": 200
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["Free Open-World"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "displayName", "workspaceHandle", "email", "plan", "createdAt", "updatedAt"]
+    },
+    "DomainRecord": {
+      "title": "DomainRecord",
+      "description": "An acquired free open-world domain or global domain owned by a user with independent Cloudflare & nameserver settings.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 253
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "tld": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 64
+        },
+        "providerLabel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "enum": ["active", "cloudflare_connected", "pending_dns"]
+        },
+        "cloudflareZoneId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "cloudflareZoneName": {
+          "type": "string",
+          "maxLength": 253
+        },
+        "cloudflareStatus": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "cloudflareNameservers": {
+          "type": "array"
+        },
+        "cloudflareAccountLabel": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "nameserverMode": {
+          "type": "string",
+          "enum": ["default", "custom"]
+        },
+        "nameservers": {
+          "type": "array"
+        },
+        "registrarLock": {
+          "type": "boolean"
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "contactName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "contactOrg": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "contactEmail": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "contactPhone": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "contactCountry": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "siteUrl": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "autoRenew": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userId", "domain", "name", "tld", "providerLabel", "status", "autoRenew", "createdAt", "updatedAt"]
+    },
+    "ShopOrder": {
+      "title": "ShopOrder",
+      "description": "Free $0.00 domain acquisition order in the user's Shop.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 253
+        },
+        "amountLabel": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "enum": ["completed", "cloudflare_linked"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userId", "domain", "amountLabel", "status", "createdAt", "updatedAt"]
+    },
+    "SupportTicket": {
+      "title": "SupportTicket",
+      "description": "User support ticket for domain or Cloudflare DNS assistance.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "department": {
+          "type": "string",
+          "enum": ["Domain Registry", "Cloudflare DNS", "Free Hosting & SSL", "General Support"]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 2000
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "answered", "closed"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "userId", "subject", "department", "message", "status", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private user profile documents restricted to the owning user."
+    },
+    "/domains/{domainId}": {
+      "schema": { "$ref": "#/entities/DomainRecord" },
+      "description": "User-owned free domains, nameservers, contact records, and Cloudflare connection metadata."
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/ShopOrder" },
+      "description": "Free domain shop acquisition records owned by the user."
+    },
+    "/tickets/{ticketId}": {
+      "schema": { "$ref": "#/entities/SupportTicket" },
+      "description": "Support tickets submitted by the user."
+    }
+  }
+}

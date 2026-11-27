@@ -1,0 +1,7 @@
+{
+  "name": "OpenDomain - Free Open World Domain Registrar & Instant AI Hosting",
+  "description": "Search, claim free open world domains (.world, .free, .open, .space), and launch instant AI-powered live websites instantly.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+

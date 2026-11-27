@@ -1,0 +1,217 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidStringList(listVal, maxItems, maxLen) {
+      return listVal is list
+        && listVal.size() <= maxItems
+        && (listVal.size() < 1 || (listVal[0] is string && listVal[0].size() <= maxLen))
+        && (listVal.size() < 2 || (listVal[1] is string && listVal[1].size() <= maxLen))
+        && (listVal.size() < 3 || (listVal[2] is string && listVal[2].size() <= maxLen))
+        && (listVal.size() < 4 || (listVal[3] is string && listVal[3].size() <= maxLen))
+        && (listVal.size() < 5 || (listVal[4] is string && listVal[4].size() <= maxLen));
+    }
+
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'displayName', 'workspaceHandle', 'email', 'plan', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'displayName', 'workspaceHandle', 'email', 'plan', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid == userId && data.uid == request.auth.uid
+        && data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100
+        && data.workspaceHandle is string && data.workspaceHandle.size() >= 2 && data.workspaceHandle.size() <= 64
+        && data.workspaceHandle.matches('^[a-z0-9\\-]+$')
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 200
+        && data.plan == 'Free Open-World'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidDomainRecord(data, domainId) {
+      return data.keys().hasAll(['id', 'userId', 'domain', 'name', 'tld', 'providerLabel', 'status', 'autoRenew', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'id', 'userId', 'domain', 'name', 'tld', 'providerLabel', 'status',
+          'cloudflareZoneId', 'cloudflareZoneName', 'cloudflareStatus', 'cloudflareNameservers',
+          'cloudflareAccountLabel', 'nameserverMode', 'nameservers', 'registrarLock', 'expiresAt',
+          'contactName', 'contactOrg', 'contactEmail', 'contactPhone', 'contactCountry',
+          'siteUrl', 'autoRenew', 'createdAt', 'updatedAt'
+        ])
+        && data.id is string && data.id == domainId && isValidId(data.id)
+        && data.userId is string && data.userId == request.auth.uid && isValidId(data.userId)
+        && data.domain is string && data.domain.size() >= 3 && data.domain.size() <= 253
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 100
+        && data.tld is string && data.tld.size() >= 2 && data.tld.size() <= 64
+        && data.providerLabel is string && data.providerLabel.size() >= 1 && data.providerLabel.size() <= 120
+        && data.status in ['active', 'cloudflare_connected', 'pending_dns']
+        && data.autoRenew is bool
+        && (!('cloudflareZoneId' in data) || (data.cloudflareZoneId is string && data.cloudflareZoneId.size() <= 128))
+        && (!('cloudflareZoneName' in data) || (data.cloudflareZoneName is string && data.cloudflareZoneName.size() <= 253))
+        && (!('cloudflareStatus' in data) || (data.cloudflareStatus is string && data.cloudflareStatus.size() <= 64))
+        && (!('cloudflareNameservers' in data) || isValidStringList(data.cloudflareNameservers, 10, 253))
+        && (!('cloudflareAccountLabel' in data) || (data.cloudflareAccountLabel is string && data.cloudflareAccountLabel.size() <= 120))
+        && (!('nameserverMode' in data) || data.nameserverMode in ['default', 'custom'])
+        && (!('nameservers' in data) || isValidStringList(data.nameservers, 5, 253))
+        && (!('registrarLock' in data) || data.registrarLock is bool)
+        && (!('expiresAt' in data) || (data.expiresAt is string && data.expiresAt.size() <= 64))
+        && (!('contactName' in data) || (data.contactName is string && data.contactName.size() <= 120))
+        && (!('contactOrg' in data) || (data.contactOrg is string && data.contactOrg.size() <= 120))
+        && (!('contactEmail' in data) || (data.contactEmail is string && data.contactEmail.size() <= 200))
+        && (!('contactPhone' in data) || (data.contactPhone is string && data.contactPhone.size() <= 40))
+        && (!('contactCountry' in data) || (data.contactCountry is string && data.contactCountry.size() <= 80))
+        && (!('siteUrl' in data) || (data.siteUrl is string && data.siteUrl.size() <= 500))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidShopOrder(data, orderId) {
+      return data.keys().hasAll(['id', 'userId', 'domain', 'amountLabel', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'userId', 'domain', 'amountLabel', 'status', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id == orderId && isValidId(data.id)
+        && data.userId is string && data.userId == request.auth.uid && isValidId(data.userId)
+        && data.domain is string && data.domain.size() >= 3 && data.domain.size() <= 253
+        && data.amountLabel is string && data.amountLabel.size() >= 1 && data.amountLabel.size() <= 32
+        && data.status in ['completed', 'cloudflare_linked']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSupportTicket(data, ticketId) {
+      return data.keys().hasAll(['id', 'userId', 'subject', 'department', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'userId', 'subject', 'department', 'message', 'status', 'createdAt', 'updatedAt'])
+        && data.id is string && data.id == ticketId && isValidId(data.id)
+        && data.userId is string && data.userId == request.auth.uid && isValidId(data.userId)
+        && data.subject is string && data.subject.size() >= 3 && data.subject.size() <= 160
+        && data.department in ['Domain Registry', 'Cloudflare DNS', 'Free Hosting & SSL', 'General Support']
+        && data.message is string && data.message.size() >= 5 && data.message.size() <= 2000
+        && data.status in ['open', 'answered', 'closed']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && isOwner(userId);
+      allow list: if false;
+      allow create: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(userId)
+        && isOwner(userId)
+        && isValidUserProfile(incoming(), userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'workspaceHandle', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    match /domains/{domainId} {
+      allow get: if isValidId(domainId) && isVerifiedUser() && existing().userId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(domainId)
+        && isVerifiedUser()
+        && isValidDomainRecord(incoming(), domainId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(domainId)
+        && isVerifiedUser()
+        && existing().userId == request.auth.uid
+        && isValidDomainRecord(incoming(), domainId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().domain == existing().domain
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'cloudflareZoneId', 'cloudflareZoneName', 'cloudflareStatus',
+            'cloudflareNameservers', 'cloudflareAccountLabel', 'nameserverMode', 'nameservers', 'updatedAt'
+          ])
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'nameserverMode', 'nameservers', 'status', 'cloudflareStatus', 'updatedAt'
+          ])
+          || incoming().diff(existing()).affectedKeys().hasOnly([
+            'contactName', 'contactOrg', 'contactEmail', 'contactPhone', 'contactCountry', 'updatedAt'
+          ])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['siteUrl', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['autoRenew', 'registrarLock', 'expiresAt', 'updatedAt'])
+        );
+      allow delete: if isValidId(domainId) && isVerifiedUser() && existing().userId == request.auth.uid;
+    }
+
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isVerifiedUser() && existing().userId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(orderId)
+        && isVerifiedUser()
+        && isValidShopOrder(incoming(), orderId)
+        && incoming().status == 'completed'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(orderId)
+        && isVerifiedUser()
+        && existing().userId == request.auth.uid
+        && existing().status != 'cloudflare_linked'
+        && isValidShopOrder(incoming(), orderId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().domain == existing().domain
+        && incoming().amountLabel == existing().amountLabel
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isValidId(orderId) && isVerifiedUser() && existing().userId == request.auth.uid;
+    }
+
+    match /tickets/{ticketId} {
+      allow get: if isValidId(ticketId) && isVerifiedUser() && existing().userId == request.auth.uid;
+      allow list: if isVerifiedUser() && resource.data.userId == request.auth.uid;
+      allow create: if isValidId(ticketId)
+        && isVerifiedUser()
+        && isValidSupportTicket(incoming(), ticketId)
+        && incoming().status == 'open'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isValidId(ticketId)
+        && isVerifiedUser()
+        && existing().userId == request.auth.uid
+        && existing().status != 'closed'
+        && isValidSupportTicket(incoming(), ticketId)
+        && incoming().id == existing().id
+        && incoming().userId == existing().userId
+        && incoming().subject == existing().subject
+        && incoming().department == existing().department
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().status == 'closed'
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if false;
+    }
+  }
+}

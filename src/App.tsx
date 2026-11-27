@@ -492,6 +492,7 @@ function PortalAppContent() {
             onGetDomain={handleGetDomain}
             acquiringDomain={acquiringDomain}
             onNavigate={handleSelectSection}
+            ownedDomains={domains.map((d) => d.domain)}
           />
         )}
 

@@ -207,6 +207,30 @@ create policy "tickets_delete_own"
   to authenticated
   using ((select auth.uid()) = user_id);
 
+-- Index for portal-wide instant domain availability lookup
+create index if not exists idx_domains_domain_lower on public.domains (lower(domain));
+
+-- Security-scoped RPC: returns ONLY already-claimed domain names from candidates (no user PII)
+create or replace function public.filter_claimed_domains(candidates text[])
+returns table(claimed_domain text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select distinct lower(d.domain) as claimed_domain
+  from public.domains d
+  where lower(d.domain) = any(
+    array(
+      select lower(trim(c))
+      from unnest(coalesce(candidates, '{}'::text[])) as c
+      limit 100
+    )
+  );
+$$;
+
+grant execute on function public.filter_claimed_domains(text[]) to anon, authenticated;
+
 -- Enable Realtime updates for all 4 tables (safe if re-run)
 do $$
 begin

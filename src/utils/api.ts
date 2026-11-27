@@ -28,17 +28,17 @@ export async function fetchJson<T = any>(
   return data as T;
 }
 
-const FREE_OPEN_DOMAINS: { tld: string; providerLabel: string }[] = [
+const CURATED_FREE_OPEN_DOMAINS: { tld: string; providerLabel: string }[] = [
+  { tld: '.is-a.dev', providerLabel: 'Open Developer Registry (Free)' },
+  { tld: '.js.org', providerLabel: 'JS.org Open Registry (Free)' },
+  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free)' },
+  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain' },
+  { tld: '.qzz.io', providerLabel: 'Open Subdomain (Free)' },
+  { tld: '.dedyn.io', providerLabel: 'deSEC Free DNS' },
+  { tld: '.dynv6.net', providerLabel: 'Dynv6 Free Open DNS' },
+  { tld: '.eu.org', providerLabel: 'EU.org Open Registry (Free)' },
   { tld: '.pages.dev', providerLabel: 'Cloudflare Pages (Free)' },
   { tld: '.workers.dev', providerLabel: 'Cloudflare Workers (Free)' },
-  { tld: '.is-a.dev', providerLabel: 'Open Developer Registry (Free)' },
-  { tld: '.eu.org', providerLabel: 'EU.org Open Registry (Free)' },
-  { tld: '.js.org', providerLabel: 'JS.org Open Registry (Free)' },
-  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain' },
-  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free)' },
-  { tld: '.qzz.io', providerLabel: 'Open Subdomain (Free)' },
-  { tld: '.duckdns.org', providerLabel: 'DuckDNS Free Dynamic DNS' },
-  { tld: '.dedyn.io', providerLabel: 'deSEC Free DNS' },
   { tld: '.github.io', providerLabel: 'GitHub Pages (Free)' },
   { tld: '.netlify.app', providerLabel: 'Netlify Hosting (Free)' },
   { tld: '.vercel.app', providerLabel: 'Vercel Hosting (Free)' },
@@ -55,30 +55,142 @@ const PRIORITY_GLOBAL_TLDS = [
   '.design', '.agency', '.digital', '.network', '.link', '.blog', '.shop', '.world', '.space', '.so',
 ];
 
-let cachedIanaTlds: string[] = [];
+interface BrowserSuffixCatalog {
+  freeTargets: { tld: string; isFree: boolean; providerLabel: string }[];
+  icannTlds: string[];
+  allTargets: { tld: string; isFree: boolean; providerLabel: string }[];
+}
 
-async function loadBrowserIanaTlds(): Promise<string[]> {
-  if (cachedIanaTlds.length > 100) return cachedIanaTlds;
-  try {
-    const resp = await fetch('https://data.iana.org/TLD/tlds-alpha-index.txt');
-    if (resp.ok) {
-      const text = await resp.text();
-      const parsed = text
-        .split(/\r?\n/)
-        .map((line) => line.trim().toLowerCase())
-        .filter((line) => line && !line.startsWith('#') && !line.startsWith('xn--'))
-        .map((tld) => `.${tld}`);
-      if (parsed.length > 100) {
-        const prioritySet = new Set(PRIORITY_GLOBAL_TLDS);
-        const rest = parsed.filter((t) => !prioritySet.has(t));
-        cachedIanaTlds = [...PRIORITY_GLOBAL_TLDS.filter((t) => parsed.includes(t)), ...rest];
-        return cachedIanaTlds;
-      }
+const ASCII_SUFFIX_PATTERN = /^[a-z0-9-]+(\.[a-z0-9-]+){0,2}$/;
+
+let cachedBrowserCatalog: BrowserSuffixCatalog | null = null;
+let browserCatalogFetchedAt = 0;
+
+function parseBrowserPublicSuffixText(text: string): BrowserSuffixCatalog {
+  let section: 'icann' | 'private' = 'icann';
+  const icannSet = new Set<string>();
+  const privateSet = new Set<string>();
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line.includes('===BEGIN ICANN DOMAINS===')) {
+      section = 'icann';
+      continue;
     }
-  } catch {
-    // Fallback to priority global TLDs
+    if (line.includes('===BEGIN PRIVATE DOMAINS===')) {
+      section = 'private';
+      continue;
+    }
+    if (!line || line.startsWith('//') || line.startsWith('!')) continue;
+
+    const rule = line.replace(/^\*\./, '').toLowerCase();
+    if (!rule || rule.includes('*') || rule.includes('xn--') || !ASCII_SUFFIX_PATTERN.test(rule)) {
+      continue;
+    }
+
+    const dotted = `.${rule}`;
+    if (section === 'icann') {
+      icannSet.add(dotted);
+    } else {
+      privateSet.add(dotted);
+    }
   }
-  return PRIORITY_GLOBAL_TLDS;
+
+  const freeTargets: { tld: string; isFree: boolean; providerLabel: string }[] = [];
+  const seenFree = new Set<string>();
+
+  for (const item of CURATED_FREE_OPEN_DOMAINS) {
+    if (!seenFree.has(item.tld)) {
+      seenFree.add(item.tld);
+      freeTargets.push({ tld: item.tld, isFree: true, providerLabel: item.providerLabel });
+    }
+  }
+
+  for (const priv of privateSet) {
+    if (!seenFree.has(priv)) {
+      seenFree.add(priv);
+      freeTargets.push({
+        tld: priv,
+        isFree: true,
+        providerLabel: 'Open Public Suffix Registry ($0)',
+      });
+    }
+  }
+
+  const prioritySet = new Set(PRIORITY_GLOBAL_TLDS);
+  const icannList = [
+    ...PRIORITY_GLOBAL_TLDS.filter((t) => icannSet.has(t)),
+    ...Array.from(icannSet).filter((t) => !prioritySet.has(t)),
+  ];
+
+  const allTargets: { tld: string; isFree: boolean; providerLabel: string }[] = [...freeTargets];
+  for (const tld of icannList) {
+    if (!seenFree.has(tld)) {
+      allTargets.push({
+        tld,
+        isFree: false,
+        providerLabel: 'IANA / ICANN Official Extension',
+      });
+    }
+  }
+
+  return {
+    freeTargets,
+    icannTlds: icannList,
+    allTargets,
+  };
+}
+
+async function loadBrowserPublicSuffixCatalog(signal?: AbortSignal): Promise<BrowserSuffixCatalog> {
+  const oneDay = 24 * 60 * 60 * 1000;
+  if (
+    cachedBrowserCatalog &&
+    cachedBrowserCatalog.allTargets.length > 500 &&
+    Date.now() - browserCatalogFetchedAt < oneDay
+  ) {
+    return cachedBrowserCatalog;
+  }
+
+  const sources = [
+    'https://publicsuffix.org/list/public_suffix_list.dat',
+    'https://raw.githubusercontent.com/publicsuffix/list/master/public_suffix_list.dat',
+  ];
+
+  for (const url of sources) {
+    try {
+      const resp = await fetch(url, { signal });
+      if (resp.ok) {
+        const text = await resp.text();
+        const catalog = parseBrowserPublicSuffixText(text);
+        if (catalog.allTargets.length > 500) {
+          cachedBrowserCatalog = catalog;
+          browserCatalogFetchedAt = Date.now();
+          return catalog;
+        }
+      }
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+    }
+  }
+
+  const fallbackFree = CURATED_FREE_OPEN_DOMAINS.map((f) => ({
+    tld: f.tld,
+    isFree: true,
+    providerLabel: f.providerLabel,
+  }));
+  const fallbackSet = new Set(fallbackFree.map((f) => f.tld));
+  return {
+    freeTargets: fallbackFree,
+    icannTlds: PRIORITY_GLOBAL_TLDS,
+    allTargets: [
+      ...fallbackFree,
+      ...PRIORITY_GLOBAL_TLDS.filter((t) => !fallbackSet.has(t)).map((t) => ({
+        tld: t,
+        isFree: false,
+        providerLabel: 'IANA / ICANN Official Extension',
+      })),
+    ],
+  };
 }
 
 async function checkDomainViaGoogleDoH(
@@ -89,8 +201,8 @@ async function checkDomainViaGoogleDoH(
   signal?: AbortSignal
 ): Promise<DomainSearchResult> {
   const start = Date.now();
-  let available = true;
-  let dnsStatus = 'Available · Free Domain Ready';
+  let available = false;
+  let dnsStatus = 'Checking...';
   let nameservers: string[] = [];
 
   try {
@@ -122,13 +234,20 @@ async function checkDomainViaGoogleDoH(
           if (Array.isArray(aData.Answer) && aData.Answer.length > 0) {
             available = false;
             dnsStatus = 'Active Site Online';
+          } else if (aData.Status === 0 || aData.Status === 3) {
+            available = true;
+            dnsStatus = 'Available · Free Domain Ready';
           }
         }
+      } else {
+        available = false;
+        dnsStatus = 'Unavailable';
       }
     }
   } catch (err: any) {
     if (err?.name === 'AbortError') throw err;
-    dnsStatus = 'Available · Check Ready';
+    available = false;
+    dnsStatus = 'Retry Lookup';
   }
 
   return {
@@ -151,21 +270,26 @@ export async function getTldStatsRealTime(): Promise<{
   totalExtensions: number;
 }> {
   try {
-    return await fetchJson('/api/domains/tlds/stats');
+    const data = await fetchJson('/api/domains/tlds/stats');
+    if (data && typeof data.totalExtensions === 'number' && data.totalExtensions > 0) {
+      return data;
+    }
   } catch {
-    const tlds = await loadBrowserIanaTlds();
-    return {
-      freeCount: FREE_OPEN_DOMAINS.length,
-      ianaTotalCount: tlds.length,
-      totalExtensions: FREE_OPEN_DOMAINS.length + tlds.length,
-    };
+    // Fallback to live browser catalog
   }
+  const catalog = await loadBrowserPublicSuffixCatalog();
+  return {
+    freeCount: catalog.freeTargets.length,
+    ianaTotalCount: catalog.icannTlds.length,
+    totalExtensions: catalog.allTargets.length,
+  };
 }
 
 export async function searchDomainsRealTime(params: {
   query: string;
   mode: 'free' | 'all';
   page: number;
+  cursor?: number;
   limit: number;
   tldFilter?: string;
   signal?: AbortSignal;
@@ -173,26 +297,35 @@ export async function searchDomainsRealTime(params: {
   query: string;
   mode: 'free' | 'all';
   page: number;
+  cursor: number;
+  nextCursor: number;
   limit: number;
   totalExtensions: number;
   hasMore: boolean;
   results: DomainSearchResult[];
 }> {
+  const startCursor = typeof params.cursor === 'number' && params.cursor >= 0 ? params.cursor : 0;
   const qs = new URLSearchParams({
     q: params.query,
     mode: params.mode,
     page: String(params.page),
+    cursor: String(startCursor),
     limit: String(params.limit),
   });
   if (params.tldFilter?.trim()) qs.set('tldFilter', params.tldFilter.trim());
 
   try {
-    return await fetchJson(`/api/domains/search?${qs.toString()}`, {
+    const data = await fetchJson(`/api/domains/search?${qs.toString()}`, {
       signal: params.signal,
     });
+    return {
+      ...data,
+      cursor: typeof data.cursor === 'number' ? data.cursor : startCursor,
+      nextCursor: typeof data.nextCursor === 'number' ? data.nextCursor : startCursor + params.limit,
+      results: Array.isArray(data.results) ? data.results.filter((r: DomainSearchResult) => r.available) : [],
+    };
   } catch (err: any) {
     if (err?.name === 'AbortError') throw err;
-    // Seamless direct Google DoH & IANA fallback so search is never blocked
     const cleanName = params.query
       .toLowerCase()
       .trim()
@@ -204,55 +337,62 @@ export async function searchDomainsRealTime(params: {
       throw new Error('Enter at least 2 alphanumeric characters for your app name.');
     }
 
-    const officialTlds = await loadBrowserIanaTlds();
-    let targets =
-      params.mode === 'free'
-        ? FREE_OPEN_DOMAINS.map((f) => ({
-            tld: f.tld,
-            isFree: true,
-            providerLabel: f.providerLabel,
-          }))
-        : [
-            ...FREE_OPEN_DOMAINS.map((f) => ({
-              tld: f.tld,
-              isFree: true,
-              providerLabel: f.providerLabel,
-            })),
-            ...officialTlds
-              .filter((t) => !FREE_OPEN_DOMAINS.some((f) => f.tld === t))
-              .map((t) => ({ tld: t, isFree: false, providerLabel: 'IANA Official Global TLD' })),
-          ];
+    const catalog = await loadBrowserPublicSuffixCatalog(params.signal);
+    let targets = params.mode === 'free' ? catalog.freeTargets : catalog.allTargets;
 
     const filterText = (params.tldFilter || '').toLowerCase().trim();
     if (filterText) {
       targets = targets.filter(
-        (t) =>
-          t.tld.includes(filterText) || t.providerLabel.toLowerCase().includes(filterText)
+        (t) => t.tld.includes(filterText) || t.providerLabel.toLowerCase().includes(filterText)
       );
     }
 
-    const startIdx = (params.page - 1) * params.limit;
-    const slice = targets.slice(startIdx, startIdx + params.limit);
-    const results = await Promise.all(
-      slice.map((item) =>
-        checkDomainViaGoogleDoH(
-          `${cleanName}${item.tld}`,
-          item.tld,
-          item.isFree,
-          item.providerLabel,
-          params.signal
+    const totalCount = targets.length;
+    const availableResults: DomainSearchResult[] = [];
+    let idx = Math.min(startCursor, totalCount);
+    let scanned = 0;
+    const maxScan = 98;
+
+    while (idx < totalCount && availableResults.length < params.limit && scanned < maxScan) {
+      const remainingNeeded = params.limit - availableResults.length;
+      const batchSize = Math.min(14, remainingNeeded + 4, totalCount - idx, maxScan - scanned);
+      if (batchSize <= 0) break;
+
+      const batchTargets = targets.slice(idx, idx + batchSize);
+      const batchChecks = await Promise.all(
+        batchTargets.map((item) =>
+          checkDomainViaGoogleDoH(
+            `${cleanName}${item.tld}`,
+            item.tld,
+            item.isFree,
+            item.providerLabel,
+            params.signal
+          )
         )
-      )
-    );
+      );
+
+      for (let i = 0; i < batchChecks.length; i++) {
+        idx += 1;
+        scanned += 1;
+        if (batchChecks[i].available) {
+          availableResults.push(batchChecks[i]);
+          if (availableResults.length >= params.limit) {
+            break;
+          }
+        }
+      }
+    }
 
     return {
       query: cleanName,
       mode: params.mode,
       page: params.page,
+      cursor: startCursor,
+      nextCursor: idx,
       limit: params.limit,
-      totalExtensions: targets.length,
-      hasMore: startIdx + params.limit < targets.length,
-      results,
+      totalExtensions: totalCount,
+      hasMore: idx < totalCount,
+      results: availableResults,
     };
   }
 }

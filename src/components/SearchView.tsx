@@ -1,18 +1,21 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { DomainSearchResult, PortalSection } from '../types';
 import { getTldStatsRealTime, searchDomainsRealTime } from '../utils/api';
-import { Search, Globe, Check, XCircle, ArrowRight, Loader2, Filter, ExternalLink } from 'lucide-react';
+import { getSupabaseClient } from '../supabase';
+import { Search, Globe, Check, ArrowRight, Loader2, Filter, ExternalLink } from 'lucide-react';
 
 interface SearchViewProps {
   onGetDomain: (result: DomainSearchResult) => Promise<void>;
   acquiringDomain: string | null;
   onNavigate: (sec: PortalSection) => void;
+  ownedDomains?: string[];
 }
 
 export const SearchView: React.FC<SearchViewProps> = ({
   onGetDomain,
   acquiringDomain,
   onNavigate,
+  ownedDomains = [],
 }) => {
   const [appName, setAppName] = useState('');
   const [mode, setMode] = useState<'free' | 'all'>('free');
@@ -20,9 +23,11 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const [results, setResults] = useState<DomainSearchResult[]>([]);
   const [selectedPreview, setSelectedPreview] = useState<DomainSearchResult | null>(null);
   const [page, setPage] = useState(1);
+  const [nextCursor, setNextCursor] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [totalExtensions, setTotalExtensions] = useState(0);
-  const [ianaTotal, setIanaTotal] = useState(0);
+  const [freeTotal, setFreeTotal] = useState(0);
+  const [globalTotal, setGlobalTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
@@ -31,7 +36,8 @@ export const SearchView: React.FC<SearchViewProps> = ({
   useEffect(() => {
     getTldStatsRealTime()
       .then((d) => {
-        if (d.ianaTotalCount) setIanaTotal(d.ianaTotalCount);
+        if (d.freeCount) setFreeTotal(d.freeCount);
+        if (d.totalExtensions) setGlobalTotal(d.totalExtensions);
       })
       .catch(() => {});
   }, []);
@@ -43,20 +49,47 @@ export const SearchView: React.FC<SearchViewProps> = ({
       setSelectedPreview(null);
       setError('');
       setHasMore(false);
+      setNextCursor(0);
       return;
     }
 
     const timer = setTimeout(() => {
-      runSearch(clean, mode, 1, tldFilter, false);
+      runSearch(clean, mode, 1, 0, tldFilter, false);
     }, 350);
 
     return () => clearTimeout(timer);
   }, [appName, mode, tldFilter]);
 
+  const filterOutClaimedDomains = async (items: DomainSearchResult[]) => {
+    const ownedSet = new Set(ownedDomains.map((d) => d.toLowerCase()));
+    let filtered = items.filter((item) => item.available && !ownedSet.has(item.domain.toLowerCase()));
+
+    const supabase = getSupabaseClient();
+    if (supabase && filtered.length > 0) {
+      try {
+        const candidates = filtered.map((f) => f.domain.toLowerCase());
+        const { data, error: rpcErr } = await supabase.rpc('filter_claimed_domains', {
+          candidates,
+        });
+        if (!rpcErr && Array.isArray(data) && data.length > 0) {
+          const claimedSet = new Set(
+            data.map((row: any) => String(row.claimed_domain || '').toLowerCase()).filter(Boolean)
+          );
+          filtered = filtered.filter((item) => !claimedSet.has(item.domain.toLowerCase()));
+        }
+      } catch {
+        // RPC optional until SQL update is run in Supabase
+      }
+    }
+
+    return filtered;
+  };
+
   const runSearch = async (
     query: string,
     searchMode: 'free' | 'all',
     targetPage: number,
+    cursor: number,
     filter: string,
     append: boolean
   ) => {
@@ -69,19 +102,49 @@ export const SearchView: React.FC<SearchViewProps> = ({
     setError('');
 
     try {
-      const data = await searchDomainsRealTime({
-        query,
-        mode: searchMode,
-        page: targetPage,
-        limit: 18,
-        tldFilter: filter,
-        signal: controller.signal,
-      });
+      let currentCursor = cursor;
+      let latestHasMore = false;
+      let latestTotalExtensions = 0;
+      let collected: DomainSearchResult[] = [];
+      let attempts = 0;
 
-      setResults((prev) => (append ? [...prev, ...data.results] : data.results));
-      setPage(data.page);
-      setHasMore(Boolean(data.hasMore));
-      setTotalExtensions(data.totalExtensions || 0);
+      // Keep scanning cleanly if an early page hits taken/claimed domains so user sees plenty of blue results
+      while (collected.length < 18 && attempts < 2) {
+        const data = await searchDomainsRealTime({
+          query,
+          mode: searchMode,
+          page: targetPage + attempts,
+          cursor: currentCursor,
+          limit: 24,
+          tldFilter: filter,
+          signal: controller.signal,
+        });
+
+        const cleanBatch = await filterOutClaimedDomains(data.results || []);
+        collected = [...collected, ...cleanBatch];
+        currentCursor = data.nextCursor ?? currentCursor + 24;
+        latestHasMore = Boolean(data.hasMore);
+        latestTotalExtensions = data.totalExtensions || latestTotalExtensions;
+        attempts += 1;
+
+        if (!latestHasMore || currentCursor >= latestTotalExtensions) break;
+      }
+
+      setResults((prev) => {
+        const base = append ? prev : [];
+        const seen = new Set(base.map((b) => b.domain.toLowerCase()));
+        const uniqueNew = collected.filter((c) => {
+          const key = c.domain.toLowerCase();
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        return [...base, ...uniqueNew];
+      });
+      setPage(targetPage);
+      setNextCursor(currentCursor);
+      setHasMore(latestHasMore);
+      setTotalExtensions(latestTotalExtensions);
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
         setError(err?.message || 'Unable to check domain availability right now.');
@@ -95,9 +158,14 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const handleLoadMore = () => {
     const clean = appName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
     if (clean.length >= 2 && hasMore && !loadingMore) {
-      runSearch(clean, mode, page + 1, tldFilter, true);
+      runSearch(clean, mode, page + 1, nextCursor, tldFilter, true);
     }
   };
+
+  const visibleCountLabel =
+    globalTotal > 0 ? `${globalTotal.toLocaleString()}+` : '9,000+';
+  const freeCountLabel =
+    freeTotal > 0 ? `${freeTotal.toLocaleString()}+` : '2,500+';
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-5">
@@ -118,8 +186,8 @@ export const SearchView: React.FC<SearchViewProps> = ({
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900">Find Your Domain Name</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Type your app or brand name below to check live availability across free open registries and{' '}
-            {ianaTotal > 0 ? `${ianaTotal.toLocaleString()}+` : '1,400+'} global extensions.
+            Type your app or brand name below to pull live available domains across{' '}
+            {freeCountLabel} open registries and {visibleCountLabel} global extensions.
           </p>
         </div>
 
@@ -157,7 +225,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 mode === 'free' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              Free Open Registries ($0)
+              Free Open Registries ({freeCountLabel})
             </button>
             <button
               type="button"
@@ -166,13 +234,13 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 mode === 'all' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              All Global Extensions ({ianaTotal > 0 ? ianaTotal.toLocaleString() : '1,400+'})
+              All Global Extensions ({visibleCountLabel})
             </button>
           </div>
 
           {results.length > 0 && (
             <span className="text-xs text-slate-500 tabular-nums">
-              Showing {results.length} of {totalExtensions.toLocaleString()} extensions
+              {results.length} ready to claim · {totalExtensions.toLocaleString()} live extensions
             </span>
           )}
         </div>
@@ -202,27 +270,43 @@ export const SearchView: React.FC<SearchViewProps> = ({
               <span className="text-xs text-slate-600">· {selectedPreview.providerLabel}</span>
             </div>
           </div>
-          {selectedPreview.available && (
-            <button
-              type="button"
-              onClick={() => onGetDomain(selectedPreview)}
-              disabled={!!acquiringDomain}
-              className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shrink-0"
-            >
-              <Check className="w-3.5 h-3.5" />
-              <span>Claim {selectedPreview.domain} ($0.00)</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => onGetDomain(selectedPreview)}
+            disabled={!!acquiringDomain}
+            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+          >
+            <Check className="w-3.5 h-3.5" />
+            <span>Claim {selectedPreview.domain} ($0.00)</span>
+          </button>
         </div>
       )}
 
       {!appName.trim() && results.length === 0 && (
         <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center space-y-2">
           <Globe className="w-9 h-9 text-blue-600 mx-auto" />
-          <div className="text-base font-bold text-slate-900">Instant Domain Lookup</div>
+          <div className="text-base font-bold text-slate-900">Instant Available Domain Search</div>
           <p className="text-sm text-slate-600 max-w-md mx-auto">
-            Enter your desired name above to check available domains. Tap any link to preview it, then claim it to set up nameservers and connect Cloudflare.
+            Enter your desired name above. Unavailable domains are automatically hidden so you only see links ready to claim and connect right away.
           </p>
+        </div>
+      )}
+
+      {!loading && appName.trim().length >= 2 && results.length === 0 && !error && (
+        <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center space-y-3">
+          <div className="text-sm font-semibold text-slate-800">
+            No free matches in this batch yet.
+          </div>
+          {hasMore && (
+            <button
+              type="button"
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+              className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl cursor-pointer"
+            >
+              {loadingMore ? 'Checking more extensions...' : 'Check Next Batch of Extensions'}
+            </button>
+          )}
         </div>
       )}
 
@@ -247,45 +331,33 @@ export const SearchView: React.FC<SearchViewProps> = ({
                     <span className="text-xs text-slate-500">· {item.providerLabel}</span>
                   </div>
                   <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
-                    <span className={item.available ? 'text-emerald-700 font-semibold' : 'text-red-600 font-medium'}>
-                      {item.dnsStatus}
+                    <span className="text-emerald-700 font-semibold">
+                      {item.dnsStatus} · No Expiry
                     </span>
-                    {!item.available && item.nameservers.length > 0 && (
-                      <span className="text-slate-500 truncate max-w-xs">
-                        · NS: {item.nameservers.slice(0, 2).join(', ')}
-                      </span>
-                    )}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-3 shrink-0 justify-between sm:justify-end">
-                  <span className="text-xs font-bold text-emerald-700">$0.00 / yr</span>
-                  {item.available ? (
-                    <button
-                      type="button"
-                      onClick={() => onGetDomain(item)}
-                      disabled={!!acquiringDomain}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                    >
-                      {isAcquiring ? (
-                        <>
-                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          <span>Adding...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Check className="w-3.5 h-3.5" />
-                          <span>Get Domain</span>
-                          <ArrowRight className="w-3.5 h-3.5" />
-                        </>
-                      )}
-                    </button>
-                  ) : (
-                    <span className="px-3.5 py-2 bg-slate-100 text-slate-400 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 whitespace-nowrap">
-                      <XCircle className="w-3.5 h-3.5" />
-                      <span>Registered</span>
-                    </span>
-                  )}
+                  <span className="text-xs font-bold text-emerald-700">$0.00 / Free</span>
+                  <button
+                    type="button"
+                    onClick={() => onGetDomain(item)}
+                    disabled={!!acquiringDomain}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                  >
+                    {isAcquiring ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Adding...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Get Domain</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
             );
@@ -297,9 +369,14 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 type="button"
                 onClick={handleLoadMore}
                 disabled={loadingMore}
-                className="px-5 py-2 bg-white border border-slate-300 hover:border-slate-400 text-slate-800 text-xs font-semibold rounded-xl cursor-pointer"
+                className="px-5 py-2.5 bg-white border border-slate-300 hover:border-slate-400 text-slate-800 text-xs font-semibold rounded-xl cursor-pointer inline-flex items-center gap-2"
               >
-                {loadingMore ? 'Loading more extensions...' : 'Load More Extensions'}
+                {loadingMore && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />}
+                <span>
+                  {loadingMore
+                    ? 'Pulling more available domains...'
+                    : `Load More Available Domains (${(totalExtensions - nextCursor).toLocaleString()} left to scan)`}
+                </span>
               </button>
             </div>
           )}

@@ -575,9 +575,9 @@ app.post('/api/cloudflare/dns/update', async (req, res) => {
       name,
       content,
       ttl: typeof ttl === 'number' && ttl >= 1 ? ttl : 1,
-      proxied: type === 'A' || type === 'CNAME' ? Boolean(proxied) : false,
+      proxied: type === 'A' || type === 'CNAME' || type === 'AAAA' ? Boolean(proxied) : false,
     };
-    if (type === 'MX') {
+    if (type === 'MX' || type === 'SRV' || type === 'URI') {
       payload.priority = typeof priority === 'number' ? priority : 10;
     }
 
@@ -622,6 +622,110 @@ app.post('/api/cloudflare/dns/delete', async (req, res) => {
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to delete Cloudflare DNS record.' });
   }
+});
+
+const PRIORITY_COMMON_RRTYPES = [
+  'A', 'AAAA', 'CNAME', 'TXT', 'MX', 'NS', 'SRV', 'CAA', 'PTR',
+  'HTTPS', 'SVCB', 'SOA', 'SPF', 'DS', 'DNSKEY', 'TLSA', 'SSHFP',
+  'URI', 'NAPTR', 'CERT', 'DNAME', 'LOC', 'OPENPGPKEY', 'SMIMEA',
+];
+
+const BUILTIN_FALLBACK_RRTYPES: { type: string; code: number; meaning: string; category: 'common' | 'iana' }[] = [
+  { type: 'A', code: 1, meaning: 'IPv4 host address', category: 'common' },
+  { type: 'AAAA', code: 28, meaning: 'IPv6 host address', category: 'common' },
+  { type: 'CNAME', code: 5, meaning: 'Canonical name alias', category: 'common' },
+  { type: 'TXT', code: 16, meaning: 'Text & verification strings', category: 'common' },
+  { type: 'MX', code: 15, meaning: 'Mail exchange server', category: 'common' },
+  { type: 'NS', code: 2, meaning: 'Authoritative name server', category: 'common' },
+  { type: 'SRV', code: 33, meaning: 'Service locator record', category: 'common' },
+  { type: 'CAA', code: 257, meaning: 'Certification Authority Authorization', category: 'common' },
+  { type: 'PTR', code: 12, meaning: 'Domain name pointer (Reverse DNS)', category: 'common' },
+  { type: 'HTTPS', code: 65, meaning: 'HTTPS service binding', category: 'common' },
+  { type: 'SVCB', code: 64, meaning: 'Service binding parameters', category: 'common' },
+  { type: 'SOA', code: 6, meaning: 'Start of zone authority', category: 'common' },
+  { type: 'SPF', code: 99, meaning: 'Sender Policy Framework', category: 'common' },
+  { type: 'DS', code: 43, meaning: 'Delegation Signer (DNSSEC)', category: 'common' },
+  { type: 'DNSKEY', code: 48, meaning: 'DNSSEC public key', category: 'common' },
+  { type: 'TLSA', code: 52, meaning: 'DANE TLS certificate association', category: 'common' },
+  { type: 'SSHFP', code: 44, meaning: 'SSH public key fingerprint', category: 'common' },
+  { type: 'URI', code: 256, meaning: 'Uniform Resource Identifier', category: 'common' },
+  { type: 'NAPTR', code: 35, meaning: 'Naming Authority Pointer', category: 'common' },
+  { type: 'CERT', code: 37, meaning: 'Certificate record', category: 'common' },
+  { type: 'DNAME', code: 39, meaning: 'Delegation name', category: 'common' },
+  { type: 'LOC', code: 29, meaning: 'Geographic location', category: 'common' },
+  { type: 'OPENPGPKEY', code: 61, meaning: 'OpenPGP public key', category: 'common' },
+  { type: 'SMIMEA', code: 53, meaning: 'S/MIME certificate association', category: 'common' },
+];
+
+let cachedRrTypes: { type: string; code: number; meaning: string; category: 'common' | 'iana' }[] = [];
+let rrTypesFetchedAt = 0;
+
+async function getOfficialIanaRrTypes() {
+  const oneDay = 24 * 60 * 60 * 1000;
+  if (cachedRrTypes.length > 30 && Date.now() - rrTypesFetchedAt < oneDay) {
+    return cachedRrTypes;
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch('https://www.iana.org/assignments/dns-parameters/dns-parameters-4.csv', {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (resp.ok) {
+      const text = await resp.text();
+      const byType = new Map<string, { type: string; code: number; meaning: string; category: 'common' | 'iana' }>();
+      const commonSet = new Set(PRIORITY_COMMON_RRTYPES);
+
+      for (const line of text.split(/\r\n|\n|\r/)) {
+        const m = line.match(/^([A-Z0-9-]+),(\d+),("[^"]*"|[^,]*),/);
+        if (!m) continue;
+        const type = m[1].trim();
+        const code = Number(m[2]);
+        const meaning = m[3].replace(/^"|"$/g, '').trim() || type;
+        if (!type || type === 'Reserved' || type === 'Unassigned') continue;
+        if (/OBSOLETE|DEPRECATED/i.test(meaning)) continue;
+        if (!byType.has(type)) {
+          byType.set(type, {
+            type,
+            code,
+            meaning,
+            category: commonSet.has(type) ? 'common' : 'iana',
+          });
+        }
+      }
+
+      if (byType.size > 30) {
+        const ordered: { type: string; code: number; meaning: string; category: 'common' | 'iana' }[] = [];
+        for (const p of PRIORITY_COMMON_RRTYPES) {
+          const item = byType.get(p);
+          if (item) {
+            ordered.push(item);
+            byType.delete(p);
+          }
+        }
+        const rest = Array.from(byType.values()).sort((a, b) => a.type.localeCompare(b.type));
+        cachedRrTypes = [...ordered, ...rest];
+        rrTypesFetchedAt = Date.now();
+        return cachedRrTypes;
+      }
+    }
+  } catch (err) {
+    console.warn('Could not fetch live IANA RRTYPE CSV:', err);
+  }
+
+  return BUILTIN_FALLBACK_RRTYPES;
+}
+
+app.get('/api/dns/record-types', async (_req, res) => {
+  const types = await getOfficialIanaRrTypes();
+  res.json({
+    source: 'IANA Official DNS Parameters Registry',
+    count: types.length,
+    types,
+  });
 });
 
 app.post('/api/dns/verify-record', async (req, res) => {

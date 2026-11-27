@@ -31,6 +31,10 @@ import {
   ManageDomainView,
   ManageNameserversView,
   EditContactView,
+  RegistrarLockView,
+  DomainAddonsView,
+  PrivateNameserversView,
+  EppCodeView,
 } from './components/DomainManagementViews';
 import {
   ManageDnsView,
@@ -482,6 +486,50 @@ function PortalAppContent() {
             activeDomain={activeDomainObj}
             defaultName={profile.displayName}
             defaultEmail={profile.email}
+            onSelectDomain={(d) => setActiveDomainId(d.id)}
+            onNavigate={handleSelectSection}
+            onDomainUpdated={handleDomainUpdated}
+          />
+        )}
+
+        {activeSection === 'registrar_lock' && (
+          <RegistrarLockView
+            domains={domains}
+            activeDomain={activeDomainObj}
+            onSelectDomain={(d) => setActiveDomainId(d.id)}
+            onNavigate={handleSelectSection}
+            onDomainUpdated={handleDomainUpdated}
+          />
+        )}
+
+        {activeSection === 'domain_addons' && (
+          <DomainAddonsView
+            domains={domains}
+            activeDomain={activeDomainObj}
+            onSelectDomain={(d) => setActiveDomainId(d.id)}
+            onOpenCloudflare={(d) => {
+              setActiveDomainId(d.id);
+              setCloudflareModalDomain(d);
+            }}
+            onBuildSite={handleBuildSiteQuick}
+            onNavigate={handleSelectSection}
+          />
+        )}
+
+        {activeSection === 'private_nameservers' && (
+          <PrivateNameserversView
+            domains={domains}
+            activeDomain={activeDomainObj}
+            onSelectDomain={(d) => setActiveDomainId(d.id)}
+            onNavigate={handleSelectSection}
+            onDomainUpdated={handleDomainUpdated}
+          />
+        )}
+
+        {activeSection === 'epp_code' && (
+          <EppCodeView
+            domains={domains}
+            activeDomain={activeDomainObj}
             onSelectDomain={(d) => setActiveDomainId(d.id)}
             onNavigate={handleSelectSection}
             onDomainUpdated={handleDomainUpdated}

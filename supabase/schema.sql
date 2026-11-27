@@ -231,15 +231,15 @@ $$;
 
 grant execute on function public.filter_claimed_domains(text[]) to anon, authenticated;
 
--- 5. Domain DNS Records (Zone Editor: A, CNAME, TXT, MX)
+-- 5. Domain DNS Records (Zone Editor: all IANA RRTYPEs)
 create table if not exists public.dns_records (
   id text primary key,
   user_id uuid not null references auth.users(id) on delete cascade,
   domain_id text not null references public.domains(id) on delete cascade,
   domain text not null check (char_length(domain) between 3 and 253),
-  record_type text not null check (record_type in ('A', 'CNAME', 'TXT', 'MX')),
+  record_type text not null check (record_type ~ '^[A-Z0-9-]{1,20}$'),
   host text not null check (char_length(host) between 1 and 253),
-  value text not null check (char_length(value) between 1 and 1024),
+  value text not null check (char_length(value) between 1 and 2048),
   ttl integer not null default 300 check (ttl >= 1 and ttl <= 86400),
   priority integer check (priority is null or (priority >= 0 and priority <= 65535)),
   proxied boolean not null default false,
@@ -248,6 +248,14 @@ create table if not exists public.dns_records (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Safe upgrade if earlier 4-type dns_records table already exists
+alter table public.dns_records drop constraint if exists dns_records_record_type_check;
+alter table public.dns_records add constraint dns_records_record_type_check check (record_type ~ '^[A-Z0-9-]{1,20}$');
+
+-- Safe upgrade for Private Nameservers & EPP Code on domains table
+alter table public.domains add column if not exists private_nameservers jsonb not null default '[]'::jsonb;
+alter table public.domains add column if not exists epp_code text;
 
 create index if not exists idx_dns_records_user_domain on public.dns_records(user_id, domain_id);
 

@@ -112,6 +112,8 @@ export function mapDomainRow(row: any): DomainRecord {
     cloudflareAccountLabel: row.cloudflare_account_label || undefined,
     nameserverMode: row.nameserver_mode || 'default',
     nameservers: Array.isArray(row.nameservers) ? row.nameservers : [],
+    privateNameservers: Array.isArray(row.private_nameservers) ? row.private_nameservers : [],
+    eppCode: row.epp_code || undefined,
     registrarLock: row.registrar_lock ?? true,
     expiresAt: row.expires_at || undefined,
     contactName: row.contact_name || undefined,

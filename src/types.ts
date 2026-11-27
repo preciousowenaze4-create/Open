@@ -8,6 +8,11 @@ export interface UserProfile {
   updatedAt?: unknown;
 }
 
+export interface PrivateNameserverEntry {
+  hostname: string;
+  ip: string;
+}
+
 export interface DomainRecord {
   id: string;
   userId: string;
@@ -23,6 +28,8 @@ export interface DomainRecord {
   cloudflareAccountLabel?: string;
   nameserverMode?: 'default' | 'custom';
   nameservers?: string[];
+  privateNameservers?: PrivateNameserverEntry[];
+  eppCode?: string;
   registrarLock?: boolean;
   expiresAt?: string;
   contactName?: string;
@@ -70,7 +77,14 @@ export interface DomainSearchResult {
   lookupSource: string;
 }
 
-export type DnsRecordType = 'A' | 'CNAME' | 'TXT' | 'MX';
+export type DnsRecordType = string;
+
+export interface DnsRecordTypeOption {
+  type: string;
+  code: number;
+  meaning: string;
+  category: 'common' | 'iana';
+}
 
 export interface DnsRecordItem {
   id: string;
@@ -143,7 +157,11 @@ export type PortalSection =
   | 'register_domain'
   | 'manage_domain'
   | 'manage_nameservers'
+  | 'registrar_lock'
+  | 'domain_addons'
   | 'edit_contact'
+  | 'private_nameservers'
+  | 'epp_code'
   | 'manage_dns'
   | 'renewals'
   | 'transfer_cloudflare'

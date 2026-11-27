@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { getSupabaseClient, mapDnsRecordRow } from '../supabase';
-import { fetchJson, verifyDnsRecordRealTime } from '../utils/api';
+import { fetchJson, getDnsRecordTypesRealTime, verifyDnsRecordRealTime } from '../utils/api';
 import { parseRawDnsText, ParsedDnsInput, validateDnsRecordInput } from '../utils/dnsParser';
-import { DnsRecordItem, DnsRecordType, DomainRecord } from '../types';
+import { DnsRecordItem, DnsRecordType, DnsRecordTypeOption, DomainRecord } from '../types';
 import {
   Plus,
   Trash2,
@@ -15,6 +15,8 @@ import {
   ClipboardPaste,
   RefreshCw,
   FileCode2,
+  ChevronDown,
+  Search,
 } from 'lucide-react';
 
 interface DnsRecordsEditorProps {
@@ -23,18 +25,66 @@ interface DnsRecordsEditorProps {
   compact?: boolean;
 }
 
+function getValuePlaceholder(type: string): string {
+  switch (type.toUpperCase()) {
+    case 'A':
+      return 'e.g. 216.198.79.1 or 76.76.21.21';
+    case 'AAAA':
+      return 'e.g. 2606:4700:4700::1111';
+    case 'CNAME':
+      return 'e.g. cname.vercel-dns.com';
+    case 'MX':
+      return 'e.g. mx1.improvmx.com or aspmx.l.google.com';
+    case 'NS':
+      return 'e.g. ns1.vercel-dns.com';
+    case 'TXT':
+    case 'SPF':
+      return 'e.g. vc-domain-verify=... or v=spf1 include:_spf.google.com ~all';
+    case 'SRV':
+      return 'e.g. 10 5060 sipserver.example.com';
+    case 'CAA':
+      return 'e.g. 0 issue "letsencrypt.org"';
+    case 'PTR':
+      return 'e.g. host.example.com';
+    case 'HTTPS':
+    case 'SVCB':
+      return 'e.g. 1 . alpn="h2,h3"';
+    case 'TLSA':
+      return 'e.g. 3 1 1 abc123def456...';
+    case 'SSHFP':
+      return 'e.g. 4 2 123456789abcdef...';
+    case 'DS':
+      return 'e.g. 12345 13 2 1234567890ABCDEF...';
+    case 'URI':
+      return 'e.g. 1 "https://example.com"';
+    default:
+      return `Enter ${type} record value / data...`;
+  }
+}
+
 export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   domain,
   sessionToken,
   compact = false,
 }) => {
   const [records, setRecords] = useState<DnsRecordItem[]>([]);
+  const [availableTypes, setAvailableTypes] = useState<DnsRecordTypeOption[]>([
+    { type: 'A', code: 1, meaning: 'IPv4 host address', category: 'common' },
+    { type: 'AAAA', code: 28, meaning: 'IPv6 host address', category: 'common' },
+    { type: 'CNAME', code: 5, meaning: 'Canonical name alias', category: 'common' },
+    { type: 'TXT', code: 16, meaning: 'Text & verification strings', category: 'common' },
+    { type: 'MX', code: 15, meaning: 'Mail exchange server', category: 'common' },
+  ]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [checkingId, setCheckingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const [recType, setRecType] = useState<DnsRecordType>('A');
+  const [typePickerOpen, setTypePickerOpen] = useState(false);
+  const [typeSearch, setTypeSearch] = useState('');
+  const typePickerRef = useRef<HTMLDivElement | null>(null);
+
   const [host, setHost] = useState('@');
   const [value, setValue] = useState('');
   const [priority, setPriority] = useState<number>(10);
@@ -49,6 +99,49 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const hasCloudflareToken = Boolean(domain.cloudflareZoneId && sessionToken?.trim());
+
+  useEffect(() => {
+    getDnsRecordTypesRealTime()
+      .then((res) => {
+        if (res.types && res.types.length > 0) {
+          setAvailableTypes(res.types);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!typePickerOpen) return;
+    const onOutsideClick = (ev: MouseEvent) => {
+      if (typePickerRef.current && !typePickerRef.current.contains(ev.target as Node)) {
+        setTypePickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', onOutsideClick);
+    return () => document.removeEventListener('mousedown', onOutsideClick);
+  }, [typePickerOpen]);
+
+  const filteredTypeOptions = useMemo(() => {
+    const q = typeSearch.trim().toLowerCase();
+    if (!q) return availableTypes;
+    return availableTypes.filter(
+      (opt) =>
+        opt.type.toLowerCase().includes(q) ||
+        opt.meaning.toLowerCase().includes(q) ||
+        String(opt.code) === q
+    );
+  }, [availableTypes, typeSearch]);
+
+  const selectedTypeMeta = useMemo(
+    () =>
+      availableTypes.find((t) => t.type.toUpperCase() === recType.toUpperCase()) || {
+        type: recType,
+        code: 0,
+        meaning: 'Custom DNS record type',
+        category: 'iana' as const,
+      },
+    [availableTypes, recType]
+  );
 
   const loadRecords = useCallback(async () => {
     const supabase = getSupabaseClient();
@@ -67,7 +160,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
       if (dbErr) {
         if (dbErr.code === '42P01' || dbErr.code === 'PGRST205') {
           setError(
-            'Run the DNS Records SQL table setup in your Supabase SQL Editor to enable saved DNS records.'
+            'Run the DNS Records SQL setup in your Supabase SQL Editor to enable saved DNS records.'
           );
         }
         setLoading(false);
@@ -111,7 +204,11 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   const handleParsePaste = (textToParse: string) => {
     setRawPasteText(textToParse);
     setError('');
-    const parsed = parseRawDnsText(textToParse, domain.domain);
+    const parsed = parseRawDnsText(
+      textToParse,
+      domain.domain,
+      availableTypes.map((t) => t.type)
+    );
     setParsedBatch(parsed);
 
     if (parsed.length > 0) {
@@ -165,7 +262,6 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
     let cloudflareRecordId = input.editRecord?.cloudflareRecordId;
     let syncStatus: DnsRecordItem['syncStatus'] = 'saved';
 
-    // Push live to Cloudflare if user has connected this domain's Cloudflare zone token in this session
     if (hasCloudflareToken && domain.cloudflareZoneId && sessionToken) {
       if (cloudflareRecordId) {
         const cfRes = await fetchJson('/api/cloudflare/dns/update', {
@@ -202,7 +298,6 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         syncStatus = 'cloudflare_synced';
       }
     } else {
-      // Live check via Google Public DNS to detect propagation or verify target hostname
       const verify = await verifyDnsRecordRealTime({
         domain: domain.domain,
         type: norm.type,
@@ -285,7 +380,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
       setRawPasteText('');
       setShowPasteBox(false);
       setNotice(
-        `${saved.type} record (${saved.host} → ${saved.value}) ${
+        `${saved.type} record (${saved.host} -> ${saved.value}) ${
           editTarget ? 'updated' : 'saved'
         } in real time. You can add another record anytime.`
       );
@@ -404,7 +499,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
 
       setNotice(
         res.livePropagated
-          ? `Live on global DNS: ${res.fqdn} resolves to ${rec.value}.`
+          ? `Live on global DNS: ${res.fqdn} (${rec.type}) resolves to ${rec.value}.`
           : res.targetReachable
             ? `Saved cleanly. Target ${rec.value} is reachable; public propagation for ${res.fqdn} is pending.`
             : `Saved for ${res.fqdn}. Waiting for DNS propagation.`
@@ -423,6 +518,18 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
     setTimeout(() => setCopiedId(null), 1800);
   };
 
+  const showsPriority =
+    recType.toUpperCase() === 'MX' ||
+    recType.toUpperCase() === 'SRV' ||
+    recType.toUpperCase() === 'URI' ||
+    recType.toUpperCase() === 'KX';
+
+  const supportsCloudflareProxy =
+    hasCloudflareToken &&
+    (recType.toUpperCase() === 'A' ||
+      recType.toUpperCase() === 'AAAA' ||
+      recType.toUpperCase() === 'CNAME');
+
   return (
     <div className={`bg-white border border-slate-200 rounded-2xl ${compact ? 'p-5' : 'p-6'} space-y-4`}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
@@ -437,7 +544,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            Add or paste A, CNAME, TXT, or MX records for <strong>{domain.domain}</strong>
+            Supports {availableTypes.length}+ IANA record types for <strong>{domain.domain}</strong>
           </p>
         </div>
 
@@ -483,7 +590,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             value={rawPasteText}
             onChange={(e) => handleParsePaste(e.target.value)}
             placeholder={
-              'Examples:\nA  @  76.76.21.21\nCNAME  www  cname.vercel-dns.com\nType: TXT  Name: _vercel  Value: vc-domain-verify=...'
+              'Examples:\nA  @  76.76.21.21\nAAAA  @  2606:4700:4700::1111\nCNAME  www  cname.vercel-dns.com\nType: TXT  Name: _vercel  Value: vc-domain-verify=...'
             }
             className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-xl p-3 text-xs text-slate-900 font-mono focus:outline-none"
           />
@@ -510,18 +617,85 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
       {/* Add / Edit Single Record Form */}
       <form onSubmit={handleSubmitRecord} className="space-y-3 bg-slate-50/70 border border-slate-200 rounded-xl p-4">
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
-          <div className="sm:col-span-2">
-            <label className="block text-[11px] font-semibold text-slate-600 mb-1">Type</label>
-            <select
-              value={recType}
-              onChange={(e) => setRecType(e.target.value as DnsRecordType)}
-              className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-2.5 py-2.5 text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
+          {/* Searchable IANA Record Type Selector */}
+          <div className="sm:col-span-4 relative" ref={typePickerRef}>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-[11px] font-semibold text-slate-600">Record Type</label>
+              <span className="text-[10px] font-medium text-blue-600">
+                {availableTypes.length} IANA types
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setTypePickerOpen((open) => !open);
+                setTypeSearch('');
+              }}
+              className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-3 py-2.5 text-left flex items-center justify-between gap-2 cursor-pointer"
             >
-              <option value="A">A</option>
-              <option value="CNAME">CNAME</option>
-              <option value="TXT">TXT</option>
-              <option value="MX">MX</option>
-            </select>
+              <div className="min-w-0 flex items-center gap-2">
+                <span className="text-xs font-extrabold text-slate-900 shrink-0">{selectedTypeMeta.type}</span>
+                <span className="text-[11px] text-slate-500 truncate">{selectedTypeMeta.meaning}</span>
+              </div>
+              <ChevronDown className="w-4 h-4 text-slate-500 shrink-0" />
+            </button>
+
+            {typePickerOpen && (
+              <div className="absolute left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-xl shadow-2xl z-40 overflow-hidden">
+                <div className="p-2 border-b border-slate-100 bg-slate-50">
+                  <div className="relative">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                    <input
+                      type="text"
+                      autoFocus
+                      value={typeSearch}
+                      onChange={(e) => setTypeSearch(e.target.value)}
+                      placeholder="Find type (TXT, AAAA, CNAME, SRV, CAA...)"
+                      className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-lg pl-8 pr-2.5 py-1.5 text-xs text-slate-900 focus:outline-none"
+                    />
+                  </div>
+                </div>
+                <div className="max-h-64 overflow-y-auto divide-y divide-slate-100">
+                  {filteredTypeOptions.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-slate-500">
+                      No matching IANA record type found.
+                    </div>
+                  ) : (
+                    filteredTypeOptions.map((opt) => {
+                      const active = opt.type.toUpperCase() === recType.toUpperCase();
+                      return (
+                        <button
+                          key={opt.type}
+                          type="button"
+                          onClick={() => {
+                            setRecType(opt.type);
+                            setTypePickerOpen(false);
+                          }}
+                          className={`w-full px-3 py-2 text-left flex items-center justify-between gap-2 cursor-pointer transition-colors ${
+                            active ? 'bg-blue-50 text-blue-700' : 'hover:bg-slate-50 text-slate-800'
+                          }`}
+                        >
+                          <div className="min-w-0">
+                            <div className="text-xs font-bold flex items-center gap-1.5">
+                              <span>{opt.type}</span>
+                              {opt.category === 'common' && (
+                                <span className="text-[10px] font-medium px-1.5 py-0.2 bg-slate-100 text-slate-600 rounded">
+                                  Popular
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-slate-500 truncate">{opt.meaning}</div>
+                          </div>
+                          <span className="text-[10px] font-mono text-slate-400 shrink-0">
+                            #{opt.code}
+                          </span>
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="sm:col-span-3">
@@ -538,7 +712,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             />
           </div>
 
-          <div className={recType === 'MX' ? 'sm:col-span-5' : 'sm:col-span-7'}>
+          <div className={showsPriority ? 'sm:col-span-3' : 'sm:col-span-5'}>
             <label className="block text-[11px] font-semibold text-slate-600 mb-1">
               Value / Target
             </label>
@@ -547,20 +721,12 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
               required
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder={
-                recType === 'A'
-                  ? 'e.g. 216.198.79.1 or 76.76.21.21'
-                  : recType === 'CNAME'
-                    ? 'e.g. cname.vercel-dns.com'
-                    : recType === 'MX'
-                      ? 'e.g. mx1.improvmx.com'
-                      : 'e.g. vc-domain-verify=... or v=spf1 ...'
-              }
+              placeholder={getValuePlaceholder(recType)}
               className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-3 py-2.5 text-xs text-slate-900 focus:outline-none"
             />
           </div>
 
-          {recType === 'MX' && (
+          {showsPriority && (
             <div className="sm:col-span-2">
               <label className="block text-[11px] font-semibold text-slate-600 mb-1">Priority</label>
               <input
@@ -576,7 +742,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-          {hasCloudflareToken && (recType === 'A' || recType === 'CNAME') ? (
+          {supportsCloudflareProxy ? (
             <label className="inline-flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
               <input
                 type="checkbox"
@@ -588,7 +754,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             </label>
           ) : (
             <span className="text-[11px] text-slate-500">
-              Tip: Use <strong>@</strong> for root domain or paste directly from your host
+              Tip: Use <strong>@</strong> for root domain or tap Type above to search all {availableTypes.length}+ IANA record types
             </span>
           )}
 
@@ -626,7 +792,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         </div>
       ) : records.length === 0 ? (
         <div className="py-5 text-center text-xs text-slate-500 border border-dashed border-slate-200 rounded-xl">
-          No custom DNS records added yet for <strong>{domain.domain}</strong>. Add one above or paste from Vercel / Cloudflare.
+          No custom DNS records added yet for <strong>{domain.domain}</strong>. Add any IANA record type above or paste from Vercel / Cloudflare.
         </div>
       ) : (
         <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-200">
@@ -641,7 +807,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
                     {rec.type}
                   </span>
                   <span className="text-xs font-bold text-slate-900">{rec.host}</span>
-                  {rec.type === 'MX' && typeof rec.priority === 'number' && (
+                  {typeof rec.priority === 'number' && (
                     <span className="text-[11px] text-slate-500">Priority {rec.priority}</span>
                   )}
                   <span

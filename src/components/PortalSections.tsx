@@ -10,6 +10,7 @@ import {
   UserProfile,
 } from '../types';
 import { DnsRecordsEditor } from './DnsRecordsEditor';
+import { DomainManageMenu } from './DomainManagementViews';
 import {
   RefreshCw,
   Cloud,
@@ -161,10 +162,17 @@ export const ManageDnsView: React.FC<{
       </div>
 
       {matched && (
-        <DnsRecordsEditor
-          domain={matched}
-          sessionToken={sessionTokensByDomain?.[matched.id]}
-        />
+        <>
+          <DnsRecordsEditor
+            domain={matched}
+            sessionToken={sessionTokensByDomain?.[matched.id]}
+          />
+          <DomainManageMenu
+            activeSection="manage_dns"
+            activeDomain={matched}
+            onNavigate={onNavigate}
+          />
+        </>
       )}
     </div>
   );

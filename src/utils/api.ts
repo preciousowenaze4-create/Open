@@ -1,4 +1,5 @@
 import {
+  DnsRecordTypeOption,
   DomainSearchResult,
   LiveDnsLookupResult,
   NameserverVerificationResult,
@@ -498,9 +499,73 @@ export async function verifyNameserversRealTime(payload: {
   }
 }
 
+export async function getDnsRecordTypesRealTime(): Promise<{
+  source: string;
+  count: number;
+  types: DnsRecordTypeOption[];
+}> {
+  try {
+    const data = await fetchJson('/api/dns/record-types');
+    if (data && Array.isArray(data.types) && data.types.length > 0) {
+      return data;
+    }
+  } catch {
+    // Fallback list below when offline
+  }
+
+  const fallback: DnsRecordTypeOption[] = [
+    { type: 'A', code: 1, meaning: 'IPv4 host address', category: 'common' },
+    { type: 'AAAA', code: 28, meaning: 'IPv6 host address', category: 'common' },
+    { type: 'CNAME', code: 5, meaning: 'Canonical name alias', category: 'common' },
+    { type: 'TXT', code: 16, meaning: 'Text & verification strings', category: 'common' },
+    { type: 'MX', code: 15, meaning: 'Mail exchange server', category: 'common' },
+    { type: 'NS', code: 2, meaning: 'Authoritative name server', category: 'common' },
+    { type: 'SRV', code: 33, meaning: 'Service locator record', category: 'common' },
+    { type: 'CAA', code: 257, meaning: 'Certification Authority Authorization', category: 'common' },
+    { type: 'PTR', code: 12, meaning: 'Domain name pointer', category: 'common' },
+    { type: 'HTTPS', code: 65, meaning: 'HTTPS service binding', category: 'common' },
+    { type: 'SVCB', code: 64, meaning: 'Service binding parameters', category: 'common' },
+    { type: 'SOA', code: 6, meaning: 'Start of zone authority', category: 'common' },
+    { type: 'SPF', code: 99, meaning: 'Sender Policy Framework', category: 'common' },
+    { type: 'DS', code: 43, meaning: 'Delegation Signer (DNSSEC)', category: 'common' },
+    { type: 'DNSKEY', code: 48, meaning: 'DNSSEC public key', category: 'common' },
+    { type: 'TLSA', code: 52, meaning: 'DANE TLS certificate association', category: 'common' },
+    { type: 'SSHFP', code: 44, meaning: 'SSH public key fingerprint', category: 'common' },
+    { type: 'URI', code: 256, meaning: 'Uniform Resource Identifier', category: 'common' },
+    { type: 'NAPTR', code: 35, meaning: 'Naming Authority Pointer', category: 'common' },
+    { type: 'CERT', code: 37, meaning: 'Certificate record', category: 'common' },
+    { type: 'DNAME', code: 39, meaning: 'Delegation name', category: 'common' },
+    { type: 'LOC', code: 29, meaning: 'Geographic location', category: 'common' },
+    { type: 'OPENPGPKEY', code: 61, meaning: 'OpenPGP public key', category: 'common' },
+    { type: 'SMIMEA', code: 53, meaning: 'S/MIME certificate association', category: 'common' },
+    { type: 'AFSDB', code: 18, meaning: 'AFS Data Base location', category: 'iana' },
+    { type: 'APL', code: 42, meaning: 'Address Prefix List', category: 'iana' },
+    { type: 'CDNSKEY', code: 60, meaning: 'Child DNSKEY', category: 'iana' },
+    { type: 'CDS', code: 59, meaning: 'Child DS', category: 'iana' },
+    { type: 'CSYNC', code: 62, meaning: 'Child-To-Parent Synchronization', category: 'iana' },
+    { type: 'DHCID', code: 49, meaning: 'DHCID identifier', category: 'iana' },
+    { type: 'EUI48', code: 108, meaning: '48-bit MAC address', category: 'iana' },
+    { type: 'EUI64', code: 109, meaning: '64-bit MAC address', category: 'iana' },
+    { type: 'HINFO', code: 13, meaning: 'Host information', category: 'iana' },
+    { type: 'HIP', code: 55, meaning: 'Host Identity Protocol', category: 'iana' },
+    { type: 'IPSECKEY', code: 45, meaning: 'IPsec public key', category: 'iana' },
+    { type: 'KX', code: 36, meaning: 'Key Exchanger', category: 'iana' },
+    { type: 'NSEC', code: 47, meaning: 'Next Secure record', category: 'iana' },
+    { type: 'NSEC3', code: 50, meaning: 'NSEC3 hashed denial of existence', category: 'iana' },
+    { type: 'RP', code: 17, meaning: 'Responsible Person', category: 'iana' },
+    { type: 'WALLET', code: 262, meaning: 'Blockchain wallet mapping', category: 'iana' },
+    { type: 'ZONEMD', code: 63, meaning: 'Message Digest for DNS Zones', category: 'iana' },
+  ];
+  return {
+    source: 'IANA DNS Parameters Registry',
+    count: fallback.length,
+    types: fallback,
+  };
+}
+
 export async function verifyDnsRecordRealTime(payload: {
   domain: string;
-  type: 'A' | 'CNAME' | 'TXT' | 'MX';
+  type: string;
   host: string;
   value: string;
 }): Promise<{
@@ -553,9 +618,9 @@ export async function verifyDnsRecordRealTime(payload: {
       type: payload.type,
       livePropagated,
       targetReachable:
-        payload.type === 'A' || payload.type === 'TXT'
-          ? true
-          : Boolean(targetRes && targetRes.Status === 0 && targetIps.length > 0),
+        payload.type === 'CNAME' || payload.type === 'MX'
+          ? Boolean(targetRes && targetRes.Status === 0 && targetIps.length > 0)
+          : true,
       targetIps: targetIps.slice(0, 3),
       liveAnswers,
       checkedAt: new Date().toISOString(),

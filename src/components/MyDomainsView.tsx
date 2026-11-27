@@ -144,11 +144,41 @@ export const MyDomainsView: React.FC<MyDomainsViewProps> = ({
         type="button"
         onClick={() => {
           setOpenMenuId(null);
+          onSelectDomainAction(d, 'manage_dns');
+        }}
+        className="w-full text-left px-4 py-3 sm:py-2.5 hover:bg-slate-50 text-slate-700 cursor-pointer"
+      >
+        DNS Records
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpenMenuId(null);
           onSelectDomainAction(d, 'edit_contact');
         }}
         className="w-full text-left px-4 py-3 sm:py-2.5 hover:bg-slate-50 text-slate-700 cursor-pointer"
       >
         Edit Contact Information
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpenMenuId(null);
+          onSelectDomainAction(d, 'private_nameservers');
+        }}
+        className="w-full text-left px-4 py-3 sm:py-2.5 hover:bg-slate-50 text-slate-700 cursor-pointer"
+      >
+        Private Nameservers
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          setOpenMenuId(null);
+          onSelectDomainAction(d, 'epp_code');
+        }}
+        className="w-full text-left px-4 py-3 sm:py-2.5 hover:bg-slate-50 text-slate-700 cursor-pointer"
+      >
+        Get EPP Code
       </button>
       <button
         type="button"

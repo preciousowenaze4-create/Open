@@ -102,7 +102,9 @@ export interface NameserverVerificationResult {
     reachable: boolean;
     ips: string[];
     isCloudflare: boolean;
+    provider?: string;
   }[];
+  detectedProvider: string;
   liveDomainNs: string[];
   liveMatched: boolean;
   usesCloudflareNs: boolean;

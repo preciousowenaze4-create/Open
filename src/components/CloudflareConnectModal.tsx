@@ -269,9 +269,9 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
           <div className="flex items-center gap-2.5">
             <Cloud className="w-6 h-6 text-amber-500 fill-amber-500" />
             <div>
-              <h2 className="text-base font-bold text-slate-900">Connect Cloudflare Account</h2>
+              <h2 className="text-base font-bold text-slate-900">DNS & Cloud Account Connect</h2>
               <p className="text-xs text-slate-500">
-                Link each domain to its own Cloudflare account, zone, and live DNS records
+                Link this domain to Cloudflare API or any external DNS provider & account label
               </p>
             </div>
           </div>
@@ -310,7 +310,7 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
             </div>
           )}
 
-          {/* Switch Between Domains + Account Label */}
+          {/* Switch Between Domains + General Provider / Account Label */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {domains.length > 0 && (
               <div>
@@ -335,14 +335,14 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
 
             <div className={domains.length > 0 ? '' : 'sm:col-span-2'}>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Cloudflare Account Label
+                Provider / Account Name
               </label>
               <input
                 type="text"
                 maxLength={120}
                 value={accountLabel}
                 onChange={(e) => setAccountLabel(e.target.value)}
-                placeholder="e.g. Client Account 1, Personal CF"
+                placeholder="e.g. Cloudflare, Vercel, Namecheap, Client Server"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2.5 text-xs text-slate-900"
               />
             </div>
@@ -366,7 +366,7 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
           {/* API Key Input */}
           <form onSubmit={handleVerifyToken} className="space-y-2.5">
             <label className="block text-xs font-semibold text-slate-700">
-              Cloudflare API Token for {activeDomainName || 'this domain'} (Session Memory Only)
+              API Token for {activeDomainName || 'this domain'} (Cloudflare Zone:Edit · Session Only)
             </label>
             <div className="flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">

@@ -19,6 +19,28 @@ import {
   ArrowRight,
 } from 'lucide-react';
 
+function guessProviderClient(nsList: string[]): string {
+  const first = nsList.find((n) => n.trim().length > 0)?.trim().toLowerCase() || '';
+  if (!first) return '';
+  if (first.includes('cloudflare')) return 'Cloudflare DNS';
+  if (first.includes('vercel')) return 'Vercel DNS';
+  if (first.includes('nsone') || first.includes('netlify')) return 'Netlify / NS1 DNS';
+  if (first.includes('digitalocean')) return 'DigitalOcean DNS';
+  if (first.includes('awsdns')) return 'Amazon Route 53';
+  if (first.includes('googledomains') || first.includes('.ns.google.')) return 'Google Cloud DNS';
+  if (first.includes('registrar-servers') || first.includes('namecheap')) return 'Namecheap DNS';
+  if (first.includes('domaincontrol') || first.includes('godaddy')) return 'GoDaddy DNS';
+  if (first.includes('dns-parking') || first.includes('hostinger')) return 'Hostinger DNS';
+  if (first.includes('hetzner')) return 'Hetzner DNS';
+  if (first.includes('linode') || first.includes('akam.net')) return 'Akamai / Linode DNS';
+  if (first.includes('bunny.net')) return 'Bunny DNS';
+  if (first.includes('desec')) return 'deSEC DNS';
+  if (first.includes('openhost.world')) return 'OpenHost Managed DNS';
+  const parts = first.split('.').filter(Boolean);
+  if (parts.length >= 2) return `Custom DNS (${parts.slice(-2).join('.')})`;
+  return 'Custom DNS';
+}
+
 interface DomainSwitcherBarProps {
   domains: DomainRecord[];
   activeDomain: DomainRecord | null;
@@ -38,7 +60,7 @@ const DomainSwitcherBar: React.FC<DomainSwitcherBarProps> = ({
         <Globe className="w-9 h-9 text-slate-300 mx-auto" />
         <p className="text-sm font-semibold text-slate-900">No domains in your account yet</p>
         <p className="text-xs text-slate-500">
-          Register a free domain first to configure nameservers, contact records, or Cloudflare.
+          Register a free domain first to configure nameservers, contact records, or cloud connections.
         </p>
         <button
           type="button"
@@ -80,7 +102,7 @@ const DomainSwitcherBar: React.FC<DomainSwitcherBarProps> = ({
           rel="noreferrer"
           className="text-xs font-medium text-blue-600 hover:underline inline-flex items-center gap-1 shrink-0"
         >
-          <span>Visit https://{activeDomain.domain}</span>
+          <span>https://{activeDomain.domain}</span>
           <ExternalLink className="w-3.5 h-3.5" />
         </a>
       )}
@@ -89,7 +111,7 @@ const DomainSwitcherBar: React.FC<DomainSwitcherBarProps> = ({
 };
 
 // =====================================================================
-// 1. MANAGE NAMESERVERS (Matches IMG_5714 & IMG_5715)
+// 1. MANAGE NAMESERVERS (Supports ANY DNS / Cloud Provider + Live Verification)
 // =====================================================================
 interface ManageNameserversViewProps {
   domains: DomainRecord[];
@@ -110,6 +132,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
 }) => {
   const [mode, setMode] = useState<'default' | 'custom'>('custom');
   const [nsList, setNsList] = useState<string[]>(['', '', '', '', '']);
+  const [providerName, setProviderName] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [verification, setVerification] = useState<NameserverVerificationResult | null>(null);
@@ -129,12 +152,18 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
       existing[3] || '',
       existing[4] || '',
     ]);
+    setProviderName(activeDomain.cloudflareAccountLabel || guessProviderClient(existing));
     setVerification(null);
     setError('');
   }, [activeDomain?.id]);
 
   const handleUpdateNs = (idx: number, val: string) => {
-    setNsList((prev) => prev.map((item, i) => (i === idx ? val : item)));
+    const updated = nsList.map((item, i) => (i === idx ? val : item));
+    setNsList(updated);
+    const detected = guessProviderClient(updated);
+    if (detected && (!providerName.trim() || providerName.includes('DNS') || providerName.includes('Route 53'))) {
+      setProviderName(detected);
+    }
   };
 
   const handleConfirmNameservers = async (e: React.FormEvent) => {
@@ -150,6 +179,11 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
         ? ['ns1.openhost.world', 'ns2.openhost.world']
         : nsList.map((s) => s.trim().toLowerCase()).filter(Boolean).slice(0, 5);
 
+    const finalProviderName =
+      mode === 'default'
+        ? 'OpenHost Managed DNS'
+        : (providerName.trim() || guessProviderClient(payloadNs) || 'Custom DNS Provider').slice(0, 120);
+
     try {
       let verifiedResult: NameserverVerificationResult | null = null;
 
@@ -161,6 +195,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
             domain: activeDomain.domain,
             mode: 'custom',
             nameservers: payloadNs,
+            providerName: finalProviderName,
             apiToken: sessionToken || undefined,
           }),
         });
@@ -181,11 +216,13 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
         await updateDoc(doc(db, 'domains', activeDomain.id), {
           nameserverMode: mode,
           nameservers: mode === 'custom' ? payloadNs : [],
+          cloudflareAccountLabel:
+            verifiedResult?.detectedProvider || finalProviderName,
           status:
             isCf || activeDomain.cloudflareZoneId ? 'cloudflare_connected' : 'active',
           cloudflareStatus:
             verifiedResult?.cloudflareZone?.status ||
-            (isCf ? 'nameservers_verified' : activeDomain.cloudflareStatus || ''),
+            (mode === 'custom' ? 'nameservers_verified' : 'default'),
           updatedAt: serverTimestamp(),
         });
       } catch (err) {
@@ -199,6 +236,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
           mode: 'default',
           nameservers: ['ns1.openhost.world', 'ns2.openhost.world'],
           nsChecks: [],
+          detectedProvider: 'OpenHost Managed DNS',
           liveDomainNs: [],
           liveMatched: false,
           usesCloudflareNs: false,
@@ -211,6 +249,8 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
       setSaving(false);
     }
   };
+
+  const detectedPreview = guessProviderClient(nsList);
 
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 space-y-5">
@@ -238,7 +278,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
           <div>
             <h1 className="text-2xl font-extrabold text-slate-900">Nameservers</h1>
             <p className="text-sm text-slate-600 mt-1 leading-relaxed">
-              You can change where your domain points to here. Please be aware changes can take up to 24 hours to propagate.
+              Point your domain to Cloudflare, Vercel, Netlify, Namecheap, Route 53, Hostinger, or any custom DNS provider. Changes verify in real time and may take up to 24 hours to propagate globally.
             </p>
           </div>
 
@@ -255,19 +295,19 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
                 <span className="font-bold text-emerald-900 flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   <span>
-                    {verification.usesCloudflareNs
-                      ? `Cloudflare nameservers verified and saved for ${verification.domain}`
-                      : `Nameservers verified and saved for ${verification.domain}`}
+                    {verification.detectedProvider} verified and saved for {verification.domain}
                   </span>
                 </span>
-                <button
-                  type="button"
-                  onClick={() => onOpenCloudflare(activeDomain)}
-                  className="text-blue-700 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
-                >
-                  <span>Connect Cloudflare Zone</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
+                {verification.usesCloudflareNs && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenCloudflare(activeDomain)}
+                    className="text-blue-700 font-semibold hover:underline inline-flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>Manage Zone & API Key</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
 
               {verification.nsChecks.length > 0 && (
@@ -288,7 +328,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
 
               {verification.cloudflareZone && (
                 <div className="text-emerald-800 font-medium pt-1">
-                  Cloudflare Zone status: <strong>{verification.cloudflareZone.status}</strong> (
+                  Zone status: <strong>{verification.cloudflareZone.status}</strong> (
                   {verification.cloudflareZone.accountLabel})
                 </div>
               )}
@@ -297,7 +337,6 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
 
           <form onSubmit={handleConfirmNameservers} className="space-y-4">
             <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden divide-y divide-slate-200">
-              {/* Radio 1: Use default nameservers */}
               <label className="flex items-center gap-3.5 p-5 cursor-pointer hover:bg-slate-50/70 transition-colors">
                 <input
                   type="radio"
@@ -311,12 +350,11 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
                     Use default nameservers
                   </span>
                   <span className="text-xs text-slate-500">
-                    Route {activeDomain.domain} using OpenHost managed DNS servers
+                    Manage {activeDomain.domain} with OpenHost default DNS servers
                   </span>
                 </div>
               </label>
 
-              {/* Radio 2: Use custom nameservers (enter below) */}
               <div className="p-5 space-y-4">
                 <label className="flex items-center gap-3.5 cursor-pointer">
                   <input
@@ -331,12 +369,33 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
                       Use custom nameservers (enter below)
                     </span>
                     <span className="text-xs text-slate-500">
-                      Paste your assigned Cloudflare nameservers so Cloudflare locates {activeDomain.domain}
+                      Enter nameservers from any DNS provider — the app identifies the host automatically
                     </span>
                   </div>
                 </label>
 
                 <div className={`space-y-3.5 pt-1 ${mode === 'default' ? 'opacity-50 pointer-events-none' : ''}`}>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5 gap-2">
+                      <label className="block text-sm font-medium text-slate-700">
+                        Provider / Account Name
+                      </label>
+                      {detectedPreview && (
+                        <span className="text-xs font-medium text-blue-600">
+                          Auto-detected: {detectedPreview}
+                        </span>
+                      )}
+                    </div>
+                    <input
+                      type="text"
+                      maxLength={120}
+                      value={providerName}
+                      onChange={(e) => setProviderName(e.target.value)}
+                      placeholder="e.g. Vercel Production, Namecheap, Cloudflare Account, Custom VPS"
+                      className="w-full bg-slate-50 focus:bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-4 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
+                    />
+                  </div>
+
                   {[0, 1, 2, 3, 4].map((idx) => (
                     <div key={idx}>
                       <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -348,9 +407,9 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
                         onChange={(e) => handleUpdateNs(idx, e.target.value)}
                         placeholder={
                           idx === 0
-                            ? 'courtney.ns.cloudflare.com'
+                            ? 'e.g. ns1.vercel-dns.com or courtney.ns.cloudflare.com'
                             : idx === 1
-                              ? 'dion.ns.cloudflare.com'
+                              ? 'e.g. ns2.vercel-dns.com or dion.ns.cloudflare.com'
                               : ''
                         }
                         className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-4 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
@@ -377,7 +436,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
                 className="px-5 py-3 bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 font-semibold text-sm rounded-xl transition-colors inline-flex items-center gap-2 cursor-pointer"
               >
                 <Cloud className="w-4 h-4 text-amber-500 fill-amber-500" />
-                <span>Connect Cloudflare API Key</span>
+                <span>Connect API / Zone</span>
               </button>
             </div>
           </form>
@@ -482,7 +541,6 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
 
       {activeDomain && (
         <div className="space-y-5">
-          {/* Primary Domain Header Card */}
           <div className="bg-white border border-slate-200 rounded-2xl p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="space-y-1.5 min-w-0">
               <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -508,15 +566,14 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
                 </button>
               </div>
               <div className="text-xs text-slate-500">
-                Status:{' '}
+                Provider:{' '}
                 <strong className="text-emerald-700">
-                  {activeDomain.cloudflareZoneId
-                    ? `Cloudflare Connected (${activeDomain.cloudflareAccountLabel || activeDomain.cloudflareZoneName})`
-                    : activeDomain.nameservers && activeDomain.nameservers.length > 0
-                      ? 'Custom Nameservers Active'
-                      : 'Active · $0.00 Free Tier'}
+                  {activeDomain.cloudflareAccountLabel ||
+                    (activeDomain.nameservers && activeDomain.nameservers.length > 0
+                      ? guessProviderClient(activeDomain.nameservers)
+                      : 'OpenHost Managed DNS')}
                 </strong>
-                {activeDomain.expiresAt && ` · Next Renewal: ${activeDomain.expiresAt}`}
+                {activeDomain.expiresAt && ` · Renewal: ${activeDomain.expiresAt}`}
               </div>
             </div>
 
@@ -527,7 +584,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
                 className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
               >
                 <Cloud className="w-4 h-4 fill-white" />
-                <span>{activeDomain.cloudflareZoneId ? 'Manage Cloudflare' : 'Connect Cloudflare'}</span>
+                <span>{activeDomain.cloudflareZoneId ? 'Manage Zone' : 'Connect Provider'}</span>
               </button>
               <button
                 type="button"
@@ -540,9 +597,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
             </div>
           </div>
 
-          {/* Management Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Nameservers Summary */}
             <div className="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col justify-between space-y-4">
               <div>
                 <div className="flex items-center gap-2 text-sm font-bold text-slate-900 mb-2">
@@ -559,7 +614,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
                   </ul>
                 ) : (
                   <p className="text-xs text-slate-500">
-                    Currently using OpenHost default nameservers. Point to Cloudflare nameservers in one tap.
+                    Using OpenHost default nameservers. Point to any external DNS provider anytime.
                   </p>
                 )}
               </div>
@@ -572,7 +627,6 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
               </button>
             </div>
 
-            {/* Contact Info Summary */}
             <div className="bg-white border border-slate-200 rounded-2xl p-5 flex flex-col justify-between space-y-4">
               <div>
                 <div className="flex items-center gap-2 text-sm font-bold text-slate-900 mb-2">
@@ -600,7 +654,6 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
               </button>
             </div>
 
-            {/* Registrar Lock & Auto-Renew */}
             <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4 md:col-span-2">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
                 <div className="flex items-center gap-2.5">

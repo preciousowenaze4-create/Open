@@ -47,25 +47,27 @@ export const PortalDrawer: React.FC<PortalDrawerProps> = ({
 
       <aside className="relative z-10 w-72 max-w-[85vw] bg-white h-full border-r border-slate-200 flex flex-col justify-between overflow-y-auto">
         <div>
-          <div className="h-16 px-5 border-b border-slate-100 flex items-center justify-between">
-            <div className="flex items-center gap-2.5">
-              <img
-                src="/pwa-192x192.png"
-                alt="OpenHost"
-                className="w-8 h-8 rounded-xl shadow-xs object-cover border border-slate-200"
-              />
-              <span className="font-extrabold text-slate-900 tracking-tight text-lg">
-                Open<span className="text-amber-500">Host</span>
-              </span>
+          <div className="portal-safe-header border-b border-slate-100">
+            <div className="h-16 px-5 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <img
+                  src="/pwa-192x192.png"
+                  alt="OpenHost"
+                  className="w-8 h-8 rounded-xl shadow-xs object-cover"
+                />
+                <span className="font-extrabold text-slate-900 tracking-tight text-lg">
+                  Open<span className="text-amber-500">Host</span>
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close navigation menu"
+                className="min-w-[40px] min-h-[40px] flex items-center justify-center text-slate-500 hover:text-slate-900 rounded-xl hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close navigation menu"
-              className="p-1.5 text-slate-500 hover:text-slate-900 rounded-lg hover:bg-slate-100 cursor-pointer"
-            >
-              <X className="w-5 h-5" />
-            </button>
           </div>
 
           <nav className="p-4 space-y-1 text-sm text-slate-700">

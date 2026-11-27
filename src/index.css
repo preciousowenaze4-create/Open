@@ -10,3 +10,13 @@
 .font-mono {
   font-family: 'JetBrains Mono', monospace;
 }
+
+.portal-safe-header {
+  padding-top: max(env(safe-area-inset-top, 0px), 6px);
+}
+
+@media (display-mode: standalone) {
+  .portal-safe-header {
+    padding-top: max(env(safe-area-inset-top, 0px), 16px);
+  }
+}

@@ -154,7 +154,7 @@ service cloud.firestore {
             'cloudflareNameservers', 'cloudflareAccountLabel', 'nameserverMode', 'nameservers', 'updatedAt'
           ])
           || incoming().diff(existing()).affectedKeys().hasOnly([
-            'nameserverMode', 'nameservers', 'status', 'cloudflareStatus', 'updatedAt'
+            'nameserverMode', 'nameservers', 'status', 'cloudflareStatus', 'cloudflareAccountLabel', 'updatedAt'
           ])
           || incoming().diff(existing()).affectedKeys().hasOnly([
             'contactName', 'contactOrg', 'contactEmail', 'contactPhone', 'contactCountry', 'updatedAt'

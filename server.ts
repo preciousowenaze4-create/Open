@@ -517,9 +517,34 @@ app.get('/api/dns/live-check', async (req, res) => {
   }
 });
 
-// Real-time Nameserver verification (resolves NS hostnames & domain delegation via live DNS + optional Cloudflare check)
+function detectDnsProvider(ns: string): string {
+  const host = ns.toLowerCase();
+  if (host.endsWith('.ns.cloudflare.com') || host.includes('cloudflare')) return 'Cloudflare DNS';
+  if (host.includes('vercel-dns.com')) return 'Vercel DNS';
+  if (host.includes('nsone.net') || host.includes('netlify.com')) return 'Netlify / NS1 DNS';
+  if (host.includes('digitalocean.com')) return 'DigitalOcean DNS';
+  if (host.includes('awsdns-')) return 'Amazon Route 53';
+  if (host.includes('googledomains.com') || host.includes('.ns.google.') || host.includes('google.com')) return 'Google Cloud DNS';
+  if (host.includes('registrar-servers.com') || host.includes('namecheap')) return 'Namecheap DNS';
+  if (host.includes('domaincontrol.com') || host.includes('godaddy')) return 'GoDaddy DNS';
+  if (host.includes('dns-parking.com') || host.includes('hostinger')) return 'Hostinger DNS';
+  if (host.includes('hetzner.')) return 'Hetzner DNS';
+  if (host.includes('linode.com') || host.includes('akam.net')) return 'Akamai / Linode DNS';
+  if (host.includes('bunny.net')) return 'Bunny DNS';
+  if (host.includes('desec.')) return 'deSEC DNS';
+  if (host.includes('afraid.org')) return 'FreeDNS';
+  if (host.includes('duckdns.org')) return 'DuckDNS';
+  if (host.includes('openhost.world')) return 'OpenHost Managed DNS';
+  const parts = host.split('.');
+  if (parts.length >= 2) {
+    return `Custom DNS (${parts.slice(-2).join('.')})`;
+  }
+  return 'Custom DNS Provider';
+}
+
+// Real-time Nameserver verification (supports any DNS provider + optional Cloudflare zone check)
 app.post('/api/dns/verify-nameservers', async (req, res) => {
-  const { domain, nameservers, mode, apiToken } = req.body || {};
+  const { domain, nameservers, mode, apiToken, providerName } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
   if (!cleanDomain) {
     return res.status(400).json({ error: 'Domain name is required.' });
@@ -533,7 +558,7 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
     : [];
 
   if (mode === 'custom' && cleanedNs.length < 1) {
-    return res.status(400).json({ error: 'Enter at least one valid nameserver hostname (for example, courtney.ns.cloudflare.com).' });
+    return res.status(400).json({ error: 'Enter at least one valid nameserver hostname (e.g. ns1.vercel-dns.com or courtney.ns.cloudflare.com).' });
   }
 
   const hostPattern = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
@@ -544,9 +569,10 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
   }
 
   try {
-    // 1. Verify each entered nameserver resolves to real IP addresses on the internet
+    // 1. Verify each entered nameserver resolves on global DNS and identify its provider
     const nsChecks = await Promise.all(
       cleanedNs.map(async (ns) => {
+        const provider = detectDnsProvider(ns);
         try {
           const r = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(ns)}&type=A`);
           const data = (await r.json()) as { Status: number; Answer?: { data: string }[] };
@@ -556,6 +582,7 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
             reachable: data.Status === 0 && ips.length > 0,
             ips: ips.slice(0, 2),
             isCloudflare: ns.endsWith('.ns.cloudflare.com'),
+            provider,
           };
         } catch {
           return {
@@ -563,6 +590,7 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
             reachable: false,
             ips: [],
             isCloudflare: ns.endsWith('.ns.cloudflare.com'),
+            provider,
           };
         }
       })
@@ -575,6 +603,11 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
         nsChecks,
       });
     }
+
+    const detectedProvider =
+      (typeof providerName === 'string' && providerName.trim()) ||
+      nsChecks[0]?.provider ||
+      'OpenHost Managed DNS';
 
     // 2. Query current live NS records for the domain
     let liveDomainNs: string[] = [];
@@ -600,11 +633,11 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
             zoneName: z.name,
             status: z.status,
             nameservers: z.name_servers || [],
-            accountLabel: z.account?.name || 'Cloudflare Account',
+            accountLabel: z.account?.name || detectedProvider,
           };
         }
       } catch {
-        // Token optional; ignore if user only verified nameservers without token
+        // Token optional
       }
     }
 
@@ -617,6 +650,7 @@ app.post('/api/dns/verify-nameservers', async (req, res) => {
       mode: mode === 'default' ? 'default' : 'custom',
       nameservers: cleanedNs,
       nsChecks,
+      detectedProvider,
       liveDomainNs,
       liveMatched,
       usesCloudflareNs,

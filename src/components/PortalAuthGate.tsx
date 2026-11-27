@@ -1,43 +1,60 @@
 import React, { useState, useEffect } from 'react';
-import {
-  signInWithPopup,
-  signInWithRedirect,
-  getRedirectResult,
-  User as FirebaseUser,
-} from 'firebase/auth';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from '../firebase';
+import { User as SupabaseUser } from '@supabase/supabase-js';
+import { getSupabaseClient, mapProfileRow } from '../supabase';
 import { UserProfile } from '../types';
-import { ArrowRight, CheckCircle2, ShieldCheck, Copy, Check } from 'lucide-react';
+import {
+  ArrowRight,
+  CheckCircle2,
+  ShieldCheck,
+  ExternalLink,
+  Copy,
+  Check,
+  AlertCircle,
+} from 'lucide-react';
 
 interface PortalAuthGateProps {
-  firebaseUser: FirebaseUser | null;
+  supabaseUser: SupabaseUser | null;
   profile: UserProfile | null;
   authReady: boolean;
+  supabaseReady: boolean;
   onProfileCreated: (profile: UserProfile) => void;
 }
 
 export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
-  firebaseUser,
+  supabaseUser,
   profile,
   authReady,
+  supabaseReady,
   onProfileCreated,
 }) => {
-  const [displayName, setDisplayName] = useState(firebaseUser?.displayName || '');
+  const [displayName, setDisplayName] = useState(
+    (supabaseUser?.user_metadata?.full_name as string | undefined) ||
+      (supabaseUser?.user_metadata?.name as string | undefined) ||
+      ''
+  );
   const [workspaceHandle, setWorkspaceHandle] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [unauthorizedHost, setUnauthorizedHost] = useState('');
-  const [copiedHost, setCopiedHost] = useState(false);
+  const [iframeAuthUrl, setIframeAuthUrl] = useState('');
+  const [copiedOrigin, setCopiedOrigin] = useState(false);
 
   useEffect(() => {
-    getRedirectResult(auth).catch((err: any) => {
-      if (err?.code === 'auth/unauthorized-domain') {
-        setUnauthorizedHost(window.location.hostname);
-      } else if (err?.message) {
-        setError(err.message);
-      }
-    });
+    const metaName =
+      (supabaseUser?.user_metadata?.full_name as string | undefined) ||
+      (supabaseUser?.user_metadata?.name as string | undefined) ||
+      '';
+    if (metaName && !displayName) {
+      setDisplayName(metaName);
+    }
+  }, [supabaseUser?.id]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const errDesc = params.get('error_description') || params.get('error');
+    if (errDesc) {
+      setError(decodeURIComponent(errDesc.replace(/\+/g, ' ')));
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
   }, []);
 
   if (!authReady) {
@@ -55,31 +72,95 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
     );
   }
 
+  if (!supabaseReady) {
+    const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-lg bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-sm space-y-4">
+          <div className="flex items-center gap-3">
+            <img
+              src="/pwa-192x192.png"
+              alt="OpenHost"
+              className="w-11 h-11 rounded-2xl shadow-sm object-cover"
+            />
+            <div>
+              <span className="text-xl font-extrabold tracking-tight text-slate-900 block leading-none">
+                Open<span className="text-amber-500">Host</span>
+              </span>
+              <span className="text-xs text-slate-500">Supabase Connection Pending</span>
+            </div>
+          </div>
+
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs space-y-2 leading-relaxed">
+            <p className="font-bold flex items-center gap-1.5">
+              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>Waiting for Supabase .env credentials in this environment</span>
+            </p>
+            <p>
+              Add <strong>VITE_SUPABASE_URL</strong> and <strong>VITE_SUPABASE_ANON_KEY</strong>{' '}
+              (or <strong>SUPABASE_URL</strong> / <strong>SUPABASE_ANON_KEY</strong>) in your{' '}
+              <code>.env</code> or Vercel Environment Variables and redeploy.
+            </p>
+          </div>
+
+          {currentOrigin && (
+            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs">
+              <div className="font-semibold text-slate-700">
+                Supabase Redirect URL to allow in Authentication → URL Configuration:
+              </div>
+              <div className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                <span className="font-mono text-[11px] truncate text-slate-800">{currentOrigin}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(currentOrigin);
+                    setCopiedOrigin(true);
+                    setTimeout(() => setCopiedOrigin(false), 2000);
+                  }}
+                  className="inline-flex items-center gap-1 text-blue-600 font-semibold shrink-0 cursor-pointer"
+                >
+                  {copiedOrigin ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedOrigin ? 'Copied' : 'Copy'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   const handleGoogleSignIn = async () => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
     setLoading(true);
     setError('');
-    setUnauthorizedHost('');
+    setIframeAuthUrl('');
+
+    const isInIframe = typeof window !== 'undefined' && window.self !== window.top;
+
     try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (err: any) {
-      if (err?.code === 'auth/unauthorized-domain') {
-        setUnauthorizedHost(window.location.hostname);
-        setError(
-          `Authorize "${window.location.hostname}" in Firebase Authentication -> Settings -> Authorized domains to sign in on this deployment URL.`
-        );
-      } else if (
-        err?.code === 'auth/popup-blocked' ||
-        err?.code === 'auth/operation-not-supported-in-this-environment'
-      ) {
-        try {
-          await signInWithRedirect(auth, googleProvider);
-          return;
-        } catch (redirErr: any) {
-          setError(redirErr?.message || 'Sign-in redirect failed.');
-        }
-      } else {
-        setError(err?.message || 'Sign-in was cancelled. Please try again.');
+      const { data, error: authErr } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          skipBrowserRedirect: isInIframe,
+          queryParams: {
+            prompt: 'select_account',
+          },
+        },
+      });
+
+      if (authErr) {
+        throw authErr;
       }
+
+      if (isInIframe && data?.url) {
+        setIframeAuthUrl(data.url);
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Could not start Google Sign-In. Please check your Supabase Google provider settings.');
     } finally {
       setLoading(false);
     }
@@ -87,7 +168,8 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
 
   const handleCompleteSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!firebaseUser) return;
+    const supabase = getSupabaseClient();
+    if (!supabase || !supabaseUser) return;
 
     const cleanName = displayName.trim();
     const cleanHandle = workspaceHandle
@@ -106,31 +188,35 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
 
     setLoading(true);
     setError('');
-    const path = `users/${firebaseUser.uid}`;
     try {
-      const payload = {
-        uid: firebaseUser.uid,
-        displayName: cleanName,
-        workspaceHandle: cleanHandle,
-        email: firebaseUser.email || '',
-        plan: 'Free Open-World' as const,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      };
-      await setDoc(doc(db, 'users', firebaseUser.uid), payload);
-      onProfileCreated(payload);
-    } catch (err) {
-      try {
-        handleFirestoreError(err, OperationType.CREATE, path);
-      } catch (wrapped: any) {
-        setError(wrapped.message || 'Could not save your account.');
-      }
+      const { data, error: upsertErr } = await supabase
+        .from('profiles')
+        .upsert(
+          {
+            id: supabaseUser.id,
+            display_name: cleanName,
+            workspace_handle: cleanHandle,
+            email: supabaseUser.email || '',
+            plan: 'Free Open-World',
+          },
+          { onConflict: 'id' }
+        )
+        .select('*')
+        .single();
+
+      if (upsertErr) throw upsertErr;
+      onProfileCreated(mapProfileRow(data));
+    } catch (err: any) {
+      setError(
+        err?.message ||
+          'Could not save your profile. Make sure you ran the Supabase SQL script in SQL Editor.'
+      );
     } finally {
       setLoading(false);
     }
   };
 
-  if (!firebaseUser) {
+  if (!supabaseUser) {
     return (
       <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-md bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-sm">
@@ -150,41 +236,41 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
 
           <h1 className="text-2xl font-bold text-slate-900 mb-2">Welcome to Client Area</h1>
           <p className="text-sm text-slate-600 mb-6 leading-relaxed">
-            Sign up or sign in to claim free domains, manage custom nameservers, and connect your cloud providers in real time.
+            Sign up or sign in with Google via Supabase to claim free domains, configure custom nameservers, and connect your cloud providers in real time.
           </p>
 
           {error && (
-            <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs space-y-2">
+            <div className="mb-4 p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs space-y-1">
               <p>{error}</p>
-              {unauthorizedHost && (
-                <div className="flex items-center justify-between gap-2 bg-white border border-red-200 rounded-lg px-2.5 py-1.5">
-                  <span className="font-mono text-[11px] truncate">{unauthorizedHost}</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      navigator.clipboard.writeText(unauthorizedHost);
-                      setCopiedHost(true);
-                      setTimeout(() => setCopiedHost(false), 2000);
-                    }}
-                    className="inline-flex items-center gap-1 text-blue-600 font-semibold shrink-0 cursor-pointer"
-                  >
-                    {copiedHost ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedHost ? 'Copied' : 'Copy Host'}</span>
-                  </button>
-                </div>
-              )}
             </div>
           )}
 
-          <button
-            type="button"
-            onClick={handleGoogleSignIn}
-            disabled={loading}
-            className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer"
-          >
-            <span>{loading ? 'Signing in...' : 'Sign In with Google'}</span>
-            <ArrowRight className="w-4 h-4" />
-          </button>
+          {iframeAuthUrl ? (
+            <div className="mb-3 p-4 rounded-xl bg-blue-50 border border-blue-200 space-y-3 text-xs text-blue-900">
+              <p className="font-semibold">
+                Google login must open outside the embedded preview frame:
+              </p>
+              <a
+                href={iframeAuthUrl}
+                target="_top"
+                rel="noopener noreferrer"
+                className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2"
+              >
+                <span>Open Google Sign-In</span>
+                <ExternalLink className="w-4 h-4" />
+              </a>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={loading}
+              className="w-full py-3 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold text-sm rounded-xl transition-colors flex items-center justify-center gap-2 cursor-pointer"
+            >
+              <span>{loading ? 'Connecting to Google...' : 'Sign In with Google'}</span>
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
 
           <div className="mt-6 pt-5 border-t border-slate-100 space-y-2.5 text-xs text-slate-600">
             <div className="flex items-center gap-2">
@@ -218,7 +304,7 @@ export const PortalAuthGate: React.FC<PortalAuthGateProps> = ({
 
           <h1 className="text-xl font-bold text-slate-900 mb-1">Create Your Free Account</h1>
           <p className="text-xs text-slate-500 mb-6">
-            Signed in as <strong className="text-slate-700">{firebaseUser.email}</strong>. Enter your profile details to open your Client Area.
+            Signed in as <strong className="text-slate-700">{supabaseUser.email}</strong>. Enter your profile details to open your Client Area.
           </p>
 
           {error && (

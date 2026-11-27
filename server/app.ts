@@ -681,19 +681,31 @@ Return ONLY valid raw HTML starting with <!DOCTYPE html> and ending with </html>
   }
 
   if (!htmlContent) {
+    const escHtml = (val: string) =>
+      val
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    const safeTitle = escHtml(String(businessName || cleanDomain));
+    const safeDomain = escHtml(cleanDomain);
+    const safeDesc = escHtml(
+      String(description || 'Live open-world website hosted free with SSL and global edge readiness.')
+    );
     htmlContent = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>${businessName || cleanDomain}</title>
+  <title>${safeTitle}</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-6 font-sans">
   <div class="max-w-2xl w-full bg-slate-900 border border-slate-800 rounded-2xl p-8">
-    <p class="text-xs font-mono text-emerald-400 mb-2">${cleanDomain}</p>
-    <h1 class="text-3xl font-bold mb-3">${businessName || cleanDomain}</h1>
-    <p class="text-slate-300 text-sm mb-6 leading-relaxed">${description || 'Live open-world website hosted free with SSL and global edge readiness.'}</p>
+    <p class="text-xs font-mono text-emerald-400 mb-2">${safeDomain}</p>
+    <h1 class="text-3xl font-bold mb-3">${safeTitle}</h1>
+    <p class="text-slate-300 text-sm mb-6 leading-relaxed">${safeDesc}</p>
     <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 text-xs">
       <div class="p-4 bg-slate-950 rounded-xl border border-slate-800"><strong class="block text-white mb-1">Mobile-ready</strong>Responsive layout</div>
       <div class="p-4 bg-slate-950 rounded-xl border border-slate-800"><strong class="block text-white mb-1">SEO-optimised</strong>Clean semantic HTML</div>
@@ -719,6 +731,23 @@ Return ONLY valid raw HTML starting with <!DOCTYPE html> and ending with </html>
     siteUrl: `/site/${cleanDomain}`,
     domain: cleanDomain,
   });
+});
+
+app.get('/api/public-config', (_req, res) => {
+  const supabaseUrl =
+    process.env.VITE_SUPABASE_URL ||
+    process.env.NEXT_PUBLIC_SUPABASE_URL ||
+    process.env.SUPABASE_URL ||
+    '';
+  const supabaseAnonKey =
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_PUBLISHABLE_KEY ||
+    '';
+  res.json({ supabaseUrl, supabaseAnonKey });
 });
 
 app.get('/site/:domain', (req, res) => {

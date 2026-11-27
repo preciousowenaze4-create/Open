@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { getSupabaseClient, mapDomainRow } from '../supabase';
 import { DomainRecord, PortalSection, SupportTicket, UserProfile } from '../types';
 import {
   Server,
@@ -21,6 +20,7 @@ interface PortalDashboardProps {
   onNavigate: (section: PortalSection) => void;
   onSelectDomainAction: (domain: DomainRecord, section: PortalSection) => void;
   onOpenCloudflare: (domain?: DomainRecord) => void;
+  onDomainUpdated: (domain: DomainRecord) => void;
 }
 
 export const PortalDashboard: React.FC<PortalDashboardProps> = ({
@@ -30,6 +30,7 @@ export const PortalDashboard: React.FC<PortalDashboardProps> = ({
   onNavigate,
   onSelectDomainAction,
   onOpenCloudflare,
+  onDomainUpdated,
 }) => {
   const [builderOpen, setBuilderOpen] = useState(false);
   const [selectedDomainId, setSelectedDomainId] = useState(domains[0]?.id || '');
@@ -68,14 +69,16 @@ export const PortalDashboard: React.FC<PortalDashboardProps> = ({
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not build website.');
 
-      const path = `domains/${target.id}`;
-      try {
-        await updateDoc(doc(db, 'domains', target.id), {
-          siteUrl: data.siteUrl,
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, path);
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        const { data: updatedRow, error: dbErr } = await supabase
+          .from('domains')
+          .update({ site_url: data.siteUrl })
+          .eq('id', target.id)
+          .select('*')
+          .single();
+        if (dbErr) throw dbErr;
+        if (updatedRow) onDomainUpdated(mapDomainRow(updatedRow));
       }
 
       setBuilderOpen(false);

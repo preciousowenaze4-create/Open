@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { getSupabaseClient, mapDomainRow } from '../supabase';
 import { CloudflareDnsRecord, DomainRecord } from '../types';
 import { X, Cloud, Key, CheckCircle2, AlertCircle, Plus, Trash2, Loader2, Server } from 'lucide-react';
 
@@ -10,6 +9,7 @@ interface CloudflareConnectModalProps {
   sessionTokensByDomain: Record<string, string>;
   onSaveSessionToken: (domainId: string, token: string) => void;
   onOpenNameservers: (domain: DomainRecord) => void;
+  onDomainUpdated: (domain: DomainRecord) => void;
   onClose: () => void;
 }
 
@@ -28,6 +28,7 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
   sessionTokensByDomain,
   onSaveSessionToken,
   onOpenNameservers,
+  onDomainUpdated,
   onClose,
 }) => {
   const [selectedDomainId, setSelectedDomainId] = useState<string>(
@@ -182,21 +183,27 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
       const cfNameservers: string[] = (data.cloudflare.nameservers || []).slice(0, 5);
 
       if (selectedDomainObj) {
-        const path = `domains/${selectedDomainObj.id}`;
-        try {
-          await updateDoc(doc(db, 'domains', selectedDomainObj.id), {
-            status: 'cloudflare_connected',
-            cloudflareZoneId: data.cloudflare.zoneId,
-            cloudflareZoneName: data.cloudflare.zoneName,
-            cloudflareStatus: data.cloudflare.status,
-            cloudflareNameservers: cfNameservers,
-            cloudflareAccountLabel: resolvedAccountLabel,
-            nameserverMode: cfNameservers.length > 0 ? 'custom' : selectedDomainObj.nameserverMode || 'default',
-            nameservers: cfNameservers.length > 0 ? cfNameservers : selectedDomainObj.nameservers || [],
-            updatedAt: serverTimestamp(),
-          });
-        } catch (err) {
-          handleFirestoreError(err, OperationType.UPDATE, path);
+        const supabase = getSupabaseClient();
+        if (supabase) {
+          const { data: updatedRow, error: dbErr } = await supabase
+            .from('domains')
+            .update({
+              status: 'cloudflare_connected',
+              cloudflare_zone_id: data.cloudflare.zoneId,
+              cloudflare_zone_name: data.cloudflare.zoneName,
+              cloudflare_status: data.cloudflare.status,
+              cloudflare_nameservers: cfNameservers,
+              cloudflare_account_label: resolvedAccountLabel,
+              nameserver_mode:
+                cfNameservers.length > 0 ? 'custom' : selectedDomainObj.nameserverMode || 'default',
+              nameservers: cfNameservers.length > 0 ? cfNameservers : selectedDomainObj.nameservers || [],
+            })
+            .eq('id', selectedDomainObj.id)
+            .select('*')
+            .single();
+
+          if (dbErr) throw dbErr;
+          if (updatedRow) onDomainUpdated(mapDomainRow(updatedRow));
         }
       }
 

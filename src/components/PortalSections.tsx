@@ -1,12 +1,5 @@
 import React, { useState } from 'react';
-import {
-  doc,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  serverTimestamp,
-} from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { getSupabaseClient, mapDomainRow, mapTicketRow } from '../supabase';
 import {
   DomainRecord,
   LiveDnsLookupResult,
@@ -169,33 +162,39 @@ export const ManageDnsView: React.FC<{
 export const RenewalsView: React.FC<{
   domains: DomainRecord[];
   onNavigate: (sec: PortalSection) => void;
-}> = ({ domains, onNavigate }) => {
+  onDomainUpdated: (domain: DomainRecord) => void;
+}> = ({ domains, onNavigate, onDomainUpdated }) => {
   const [renewedMsg, setRenewedMsg] = useState('');
 
   const toggleRenew = async (d: DomainRecord) => {
-    const path = `domains/${d.id}`;
-    try {
-      await updateDoc(doc(db, 'domains', d.id), {
-        autoRenew: !d.autoRenew,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
-    }
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('domains')
+      .update({ auto_renew: !d.autoRenew })
+      .eq('id', d.id)
+      .select('*')
+      .single();
+    if (!error && data) onDomainUpdated(mapDomainRow(data));
   };
 
   const handleRenewNow = async (d: DomainRecord) => {
-    const baseYear = d.expiresAt ? parseInt(d.expiresAt.slice(0, 4), 10) || new Date().getFullYear() : new Date().getFullYear();
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const baseYear = d.expiresAt
+      ? parseInt(d.expiresAt.slice(0, 4), 10) || new Date().getFullYear()
+      : new Date().getFullYear();
     const nextExpiry = `${baseYear + 1}-12-31`;
-    try {
-      await updateDoc(doc(db, 'domains', d.id), {
-        expiresAt: nextExpiry,
-        updatedAt: serverTimestamp(),
-      });
+    const { data, error } = await supabase
+      .from('domains')
+      .update({ expires_at: nextExpiry })
+      .eq('id', d.id)
+      .select('*')
+      .single();
+    if (!error && data) {
+      onDomainUpdated(mapDomainRow(data));
       setRenewedMsg(`Renewed ${d.domain} for 1 year ($0.00). New expiry: ${nextExpiry}.`);
       setTimeout(() => setRenewedMsg(''), 4000);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `domains/${d.id}`);
     }
   };
 
@@ -272,14 +271,13 @@ export const StoreOrdersView: React.FC<{
   onOpenCloudflare: (domain: DomainRecord) => void;
   onSelectDomainAction: (domain: DomainRecord, section: PortalSection) => void;
   onNavigate: (sec: PortalSection) => void;
-}> = ({ orders, domains, onOpenCloudflare, onSelectDomainAction, onNavigate }) => {
+  onOrderDeleted: (orderId: string) => void;
+}> = ({ orders, domains, onOpenCloudflare, onSelectDomainAction, onNavigate, onOrderDeleted }) => {
   const handleRemoveOrder = async (orderId: string) => {
-    const path = `orders/${orderId}`;
-    try {
-      await deleteDoc(doc(db, 'orders', orderId));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, path);
-    }
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { error } = await supabase.from('orders').delete().eq('id', orderId);
+    if (!error) onOrderDeleted(orderId);
   };
 
   return (
@@ -391,7 +389,9 @@ export const SupportTicketsView: React.FC<{
   profile: UserProfile;
   tickets: SupportTicket[];
   onNavigate: (sec: PortalSection) => void;
-}> = ({ profile, tickets, onNavigate }) => {
+  onTicketCreated: (ticket: SupportTicket) => void;
+  onTicketUpdated: (ticket: SupportTicket) => void;
+}> = ({ profile, tickets, onNavigate, onTicketCreated, onTicketUpdated }) => {
   const [subject, setSubject] = useState('');
   const [department, setDepartment] = useState<SupportTicket['department']>('Cloudflare DNS');
   const [message, setMessage] = useState('');
@@ -400,40 +400,44 @@ export const SupportTicketsView: React.FC<{
   const handleOpenTicket = async (e: React.FormEvent) => {
     e.preventDefault();
     if (subject.trim().length < 3 || message.trim().length < 5) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
 
     setSubmitting(true);
     const id = `tkt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    const path = `tickets/${id}`;
     try {
-      await setDoc(doc(db, 'tickets', id), {
-        id,
-        userId: profile.uid,
-        subject: subject.trim(),
-        department,
-        message: message.trim(),
-        status: 'open',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      setSubject('');
-      setMessage('');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.CREATE, path);
+      const { data, error } = await supabase
+        .from('tickets')
+        .insert({
+          id,
+          user_id: profile.uid,
+          subject: subject.trim(),
+          department,
+          message: message.trim(),
+          status: 'open',
+        })
+        .select('*')
+        .single();
+      if (!error && data) {
+        onTicketCreated(mapTicketRow(data));
+        setSubject('');
+        setMessage('');
+      }
     } finally {
       setSubmitting(false);
     }
   };
 
   const handleCloseTicket = async (ticket: SupportTicket) => {
-    const path = `tickets/${ticket.id}`;
-    try {
-      await updateDoc(doc(db, 'tickets', ticket.id), {
-        status: 'closed',
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
-    }
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('tickets')
+      .update({ status: 'closed' })
+      .eq('id', ticket.id)
+      .select('*')
+      .single();
+    if (!error && data) onTicketUpdated(mapTicketRow(data));
   };
 
   return (

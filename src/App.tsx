@@ -1,16 +1,14 @@
-import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, signOut, User as FirebaseUser } from 'firebase/auth';
+import React, { useState, useEffect, useCallback } from 'react';
+import { User as SupabaseUser } from '@supabase/supabase-js';
 import {
-  collection,
-  doc,
-  onSnapshot,
-  query,
-  where,
-  updateDoc,
-  serverTimestamp,
-  writeBatch,
-} from 'firebase/firestore';
-import { auth, db, handleFirestoreError, OperationType } from './firebase';
+  ensureSupabaseInitialized,
+  getSupabaseClient,
+  isSupabaseConfigured,
+  mapDomainRow,
+  mapOrderRow,
+  mapProfileRow,
+  mapTicketRow,
+} from './supabase';
 import {
   DomainRecord,
   DomainSearchResult,
@@ -44,7 +42,8 @@ import {
 import { CheckCircle2, X } from 'lucide-react';
 
 function PortalAppContent() {
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
+  const [supabaseReady, setSupabaseReady] = useState(isSupabaseConfigured());
+  const [supabaseUser, setSupabaseUser] = useState<SupabaseUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [profileLoaded, setProfileLoaded] = useState(false);
@@ -63,97 +62,140 @@ function PortalAppContent() {
   const [acquiringDomain, setAcquiringDomain] = useState<string | null>(null);
   const [toast, setToast] = useState('');
 
-  // Firebase Auth state listener
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setFirebaseUser(user);
-      setAuthReady(true);
-      if (!user) {
-        setProfile(null);
-        setProfileLoaded(false);
-        setDomains([]);
-        setOrders([]);
-        setTickets([]);
-        setSessionTokensByDomain({});
-      }
-    });
-    return () => unsub();
+  const loadUserWorkspace = useCallback(async (userId: string) => {
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+
+    const [profileRes, domainsRes, ordersRes, ticketsRes] = await Promise.all([
+      supabase.from('profiles').select('*').eq('id', userId).maybeSingle(),
+      supabase.from('domains').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      supabase.from('orders').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+      supabase.from('tickets').select('*').eq('user_id', userId).order('created_at', { ascending: false }),
+    ]);
+
+    if (profileRes.data) {
+      setProfile(mapProfileRow(profileRes.data));
+    } else {
+      setProfile(null);
+    }
+    setProfileLoaded(true);
+
+    if (domainsRes.data) setDomains(domainsRes.data.map(mapDomainRow));
+    if (ordersRes.data) setOrders(ordersRes.data.map(mapOrderRow));
+    if (ticketsRes.data) setTickets(ticketsRes.data.map(mapTicketRow));
   }, []);
 
-  // Firestore real-time listeners (strictly attached only when authenticated)
+  // Initialize Supabase (build-time or runtime public config) and listen for Auth state
   useEffect(() => {
-    if (!authReady || !firebaseUser) return;
+    let active = true;
+    let subscription: { unsubscribe: () => void } | null = null;
 
-    const userPath = `users/${firebaseUser.uid}`;
-    const unsubProfile = onSnapshot(
-      doc(db, 'users', firebaseUser.uid),
-      (snap) => {
-        if (snap.exists()) {
-          setProfile(snap.data() as UserProfile);
-        } else {
+    async function init() {
+      const supabase = await ensureSupabaseInitialized();
+      if (!active) return;
+
+      if (!supabase) {
+        setSupabaseReady(false);
+        setAuthReady(true);
+        return;
+      }
+
+      setSupabaseReady(true);
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!active) return;
+      const initialUser = session?.user ?? null;
+      setSupabaseUser(initialUser);
+      setAuthReady(true);
+
+      if (initialUser) {
+        loadUserWorkspace(initialUser.id);
+      }
+
+      const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+        const nextUser = nextSession?.user ?? null;
+        setSupabaseUser(nextUser);
+        setAuthReady(true);
+        if (!nextUser) {
           setProfile(null);
+          setProfileLoaded(false);
+          setDomains([]);
+          setOrders([]);
+          setTickets([]);
+          setSessionTokensByDomain({});
+        } else {
+          loadUserWorkspace(nextUser.id);
         }
-        setProfileLoaded(true);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.GET, userPath);
-      }
-    );
+      });
 
-    const domainsQuery = query(
-      collection(db, 'domains'),
-      where('userId', '==', firebaseUser.uid)
-    );
-    const unsubDomains = onSnapshot(
-      domainsQuery,
-      (snap) => {
-        const list = snap.docs.map((d) => d.data() as DomainRecord);
-        setDomains(list);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'domains');
-      }
-    );
+      subscription = listener.subscription;
+    }
 
-    const ordersQuery = query(
-      collection(db, 'orders'),
-      where('userId', '==', firebaseUser.uid)
-    );
-    const unsubOrders = onSnapshot(
-      ordersQuery,
-      (snap) => {
-        const list = snap.docs.map((d) => d.data() as ShopOrder);
-        setOrders(list);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'orders');
-      }
-    );
+    init();
+    return () => {
+      active = false;
+      subscription?.unsubscribe();
+    };
+  }, [loadUserWorkspace]);
 
-    const ticketsQuery = query(
-      collection(db, 'tickets'),
-      where('userId', '==', firebaseUser.uid)
-    );
-    const unsubTickets = onSnapshot(
-      ticketsQuery,
-      (snap) => {
-        const list = snap.docs.map((d) => d.data() as SupportTicket);
-        setTickets(list);
-      },
-      (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'tickets');
-      }
-    );
+  // Real-time Postgres change listeners scoped to the signed-in user
+  useEffect(() => {
+    const supabase = getSupabaseClient();
+    if (!supabase || !authReady || !supabaseUser) return;
+
+    const uid = supabaseUser.id;
+    const channel = supabase
+      .channel(`openhost-user-${uid}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${uid}` },
+        () => loadUserWorkspace(uid)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'domains', filter: `user_id=eq.${uid}` },
+        () => loadUserWorkspace(uid)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'orders', filter: `user_id=eq.${uid}` },
+        () => loadUserWorkspace(uid)
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'tickets', filter: `user_id=eq.${uid}` },
+        () => loadUserWorkspace(uid)
+      )
+      .subscribe();
 
     return () => {
-      unsubProfile();
-      unsubDomains();
-      unsubOrders();
-      unsubTickets();
+      supabase.removeChannel(channel);
     };
-  }, [authReady, firebaseUser]);
+  }, [authReady, supabaseUser, loadUserWorkspace]);
 
   const activeDomainObj = domains.find((d) => d.id === activeDomainId) || domains[0] || null;
+
+  const handleDomainUpdated = (updated: DomainRecord) => {
+    setDomains((prev) => prev.map((d) => (d.id === updated.id ? updated : d)));
+  };
+
+  const handleDomainDeleted = (domainId: string) => {
+    setDomains((prev) => prev.filter((d) => d.id !== domainId));
+  };
+
+  const handleOrderDeleted = (orderId: string) => {
+    setOrders((prev) => prev.filter((o) => o.id !== orderId));
+  };
+
+  const handleTicketCreated = (ticket: SupportTicket) => {
+    setTickets((prev) => [ticket, ...prev]);
+  };
+
+  const handleTicketUpdated = (ticket: SupportTicket) => {
+    setTickets((prev) => prev.map((t) => (t.id === ticket.id ? ticket : t)));
+  };
 
   const handleSaveSessionToken = (domainId: string, token: string) => {
     setSessionTokensByDomain((prev) => ({ ...prev, [domainId]: token }));
@@ -164,9 +206,10 @@ function PortalAppContent() {
     setActiveSection(section);
   };
 
-  // Tap "Get Domain" -> Persist atomically in Firestore (/domains + /orders), update Shop, route to My Domains & Cloudflare setup
+  // Tap "Get Domain" -> Persist in Supabase (domains + orders), update Shop, route to My Domains & DNS setup
   const handleGetDomain = async (result: DomainSearchResult) => {
-    if (!firebaseUser) return;
+    const supabase = getSupabaseClient();
+    if (!supabase || !supabaseUser) return;
 
     const existing = domains.find((d) => d.domain.toLowerCase() === result.domain.toLowerCase());
     if (existing) {
@@ -182,45 +225,56 @@ function PortalAppContent() {
     const orderId = `ord_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
     const nextYear = `${new Date().getFullYear() + 1}-12-31`;
 
-    const newDomain: DomainRecord = {
-      id: domainId,
-      userId: firebaseUser.uid,
-      domain: result.domain,
-      name: result.name,
-      tld: result.tld,
-      providerLabel: result.providerLabel,
-      status: 'active',
-      nameserverMode: 'default',
-      registrarLock: true,
-      expiresAt: nextYear,
-      autoRenew: true,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-
-    const newOrder: ShopOrder = {
-      id: orderId,
-      userId: firebaseUser.uid,
-      domain: result.domain,
-      amountLabel: '$0.00 Free',
-      status: 'completed',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    };
-
     try {
-      const batch = writeBatch(db);
-      batch.set(doc(db, 'domains', domainId), newDomain);
-      batch.set(doc(db, 'orders', orderId), newOrder);
-      await batch.commit();
+      const { data: domainRow, error: domErr } = await supabase
+        .from('domains')
+        .insert({
+          id: domainId,
+          user_id: supabaseUser.id,
+          domain: result.domain,
+          name: result.name,
+          tld: result.tld,
+          provider_label: result.providerLabel,
+          status: 'active',
+          nameserver_mode: 'default',
+          registrar_lock: true,
+          expires_at: nextYear,
+          auto_renew: true,
+        })
+        .select('*')
+        .single();
 
+      if (domErr) throw domErr;
+
+      const { data: orderRow, error: ordErr } = await supabase
+        .from('orders')
+        .insert({
+          id: orderId,
+          user_id: supabaseUser.id,
+          domain: result.domain,
+          amount_label: '$0.00 Free',
+          status: 'completed',
+        })
+        .select('*')
+        .single();
+
+      if (ordErr) throw ordErr;
+
+      const mappedDomain = mapDomainRow(domainRow);
+      const mappedOrder = mapOrderRow(orderRow);
+
+      setDomains((prev) => [mappedDomain, ...prev]);
+      setOrders((prev) => [mappedOrder, ...prev]);
       setActiveDomainId(domainId);
-      setToast(`${result.domain} added to your account! Configure Cloudflare nameservers or connect via API.`);
+      setToast(
+        `${result.domain} added to your account! Configure custom nameservers or connect your DNS provider.`
+      );
       setTimeout(() => setToast(''), 5500);
       setActiveSection('my_domains');
-      setCloudflareModalDomain({ ...newDomain });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `domains/${domainId}`);
+      setCloudflareModalDomain(mappedDomain);
+    } catch (err: any) {
+      setToast(err?.message || 'Could not claim domain. Check your Supabase SQL tables.');
+      setTimeout(() => setToast(''), 4500);
     } finally {
       setAcquiringDomain(null);
     }
@@ -244,10 +298,18 @@ function PortalAppContent() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Could not build site.');
 
-      await updateDoc(doc(db, 'domains', domain.id), {
-        siteUrl: data.siteUrl,
-        updatedAt: serverTimestamp(),
-      });
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        const { data: updatedRow, error: dbErr } = await supabase
+          .from('domains')
+          .update({ site_url: data.siteUrl })
+          .eq('id', domain.id)
+          .select('*')
+          .single();
+        if (dbErr) throw dbErr;
+        if (updatedRow) handleDomainUpdated(mapDomainRow(updatedRow));
+      }
+
       setToast(`Website published for ${domain.domain}!`);
       setTimeout(() => setToast(''), 4000);
       window.open(data.siteUrl, '_blank', 'noopener,noreferrer');
@@ -265,12 +327,20 @@ function PortalAppContent() {
     setActiveSection(section);
   };
 
-  if (!authReady || !firebaseUser || (profileLoaded && !profile)) {
+  const handleSignOut = async () => {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+  };
+
+  if (!authReady || !supabaseReady || !supabaseUser || (profileLoaded && !profile)) {
     return (
       <PortalAuthGate
-        firebaseUser={firebaseUser}
+        supabaseUser={supabaseUser}
         profile={profile}
-        authReady={authReady && (!firebaseUser || profileLoaded)}
+        authReady={authReady && (!supabaseReady || !supabaseUser || profileLoaded)}
+        supabaseReady={supabaseReady}
         onProfileCreated={(created) => setProfile(created)}
       />
     );
@@ -279,9 +349,10 @@ function PortalAppContent() {
   if (!profile) {
     return (
       <PortalAuthGate
-        firebaseUser={firebaseUser}
+        supabaseUser={supabaseUser}
         profile={null}
         authReady={false}
+        supabaseReady={supabaseReady}
         onProfileCreated={() => {}}
       />
     );
@@ -297,7 +368,7 @@ function PortalAppContent() {
         onNavigate={handleSelectSection}
         onOpenCloudflareConnect={() => setCloudflareModalDomain(activeDomainObj)}
         onSelectDomainForAction={handleSelectDomainAction}
-        onSignOut={() => signOut(auth)}
+        onSignOut={handleSignOut}
       />
 
       <PortalDrawer
@@ -335,6 +406,7 @@ function PortalAppContent() {
             onNavigate={handleSelectSection}
             onSelectDomainAction={handleSelectDomainAction}
             onOpenCloudflare={(d) => setCloudflareModalDomain(d || activeDomainObj)}
+            onDomainUpdated={handleDomainUpdated}
           />
         )}
 
@@ -349,6 +421,8 @@ function PortalAppContent() {
             onSelectDomainAction={handleSelectDomainAction}
             onNavigate={handleSelectSection}
             onBuildSite={handleBuildSiteQuick}
+            onDomainUpdated={handleDomainUpdated}
+            onDomainDeleted={handleDomainDeleted}
           />
         )}
 
@@ -363,6 +437,7 @@ function PortalAppContent() {
             }}
             onNavigate={handleSelectSection}
             onBuildSite={handleBuildSiteQuick}
+            onDomainUpdated={handleDomainUpdated}
           />
         )}
 
@@ -376,6 +451,7 @@ function PortalAppContent() {
               setCloudflareModalDomain(d);
             }}
             onNavigate={handleSelectSection}
+            onDomainUpdated={handleDomainUpdated}
             sessionToken={activeDomainObj ? sessionTokensByDomain[activeDomainObj.id] : undefined}
           />
         )}
@@ -388,6 +464,7 @@ function PortalAppContent() {
             defaultEmail={profile.email}
             onSelectDomain={(d) => setActiveDomainId(d.id)}
             onNavigate={handleSelectSection}
+            onDomainUpdated={handleDomainUpdated}
           />
         )}
 
@@ -412,7 +489,11 @@ function PortalAppContent() {
         )}
 
         {activeSection === 'renewals' && (
-          <RenewalsView domains={domains} onNavigate={handleSelectSection} />
+          <RenewalsView
+            domains={domains}
+            onNavigate={handleSelectSection}
+            onDomainUpdated={handleDomainUpdated}
+          />
         )}
 
         {activeSection === 'store' && (
@@ -425,6 +506,7 @@ function PortalAppContent() {
             }}
             onSelectDomainAction={handleSelectDomainAction}
             onNavigate={handleSelectSection}
+            onOrderDeleted={handleOrderDeleted}
           />
         )}
 
@@ -437,6 +519,8 @@ function PortalAppContent() {
             profile={profile}
             tickets={tickets}
             onNavigate={handleSelectSection}
+            onTicketCreated={handleTicketCreated}
+            onTicketUpdated={handleTicketUpdated}
           />
         )}
 
@@ -452,6 +536,7 @@ function PortalAppContent() {
           sessionTokensByDomain={sessionTokensByDomain}
           onSaveSessionToken={handleSaveSessionToken}
           onOpenNameservers={(d) => handleSelectDomainAction(d, 'manage_nameservers')}
+          onDomainUpdated={handleDomainUpdated}
           onClose={() => setCloudflareModalDomain(undefined)}
         />
       )}

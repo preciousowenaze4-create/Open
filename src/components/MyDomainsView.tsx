@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { doc, deleteDoc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { getSupabaseClient, mapDomainRow } from '../supabase';
 import { DomainRecord, PortalSection } from '../types';
 import {
   Search,
@@ -26,6 +25,8 @@ interface MyDomainsViewProps {
   onSelectDomainAction: (domain: DomainRecord, section: PortalSection) => void;
   onNavigate: (section: PortalSection) => void;
   onBuildSite: (domain: DomainRecord) => void;
+  onDomainUpdated: (domain: DomainRecord) => void;
+  onDomainDeleted: (domainId: string) => void;
 }
 
 export const MyDomainsView: React.FC<MyDomainsViewProps> = ({
@@ -35,6 +36,8 @@ export const MyDomainsView: React.FC<MyDomainsViewProps> = ({
   onSelectDomainAction,
   onNavigate,
   onBuildSite,
+  onDomainUpdated,
+  onDomainDeleted,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [viewFilter, setViewFilter] = useState<'all' | 'cloudflare' | 'pending'>('all');
@@ -71,42 +74,46 @@ export const MyDomainsView: React.FC<MyDomainsViewProps> = ({
   };
 
   const handleToggleAutoRenew = async (domain: DomainRecord) => {
-    const path = `domains/${domain.id}`;
-    try {
-      await updateDoc(doc(db, 'domains', domain.id), {
-        autoRenew: !domain.autoRenew,
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { data, error } = await supabase
+      .from('domains')
+      .update({ auto_renew: !domain.autoRenew })
+      .eq('id', domain.id)
+      .select('*')
+      .single();
+    if (!error && data) {
+      onDomainUpdated(mapDomainRow(data));
     }
     setOpenMenuId(null);
   };
 
   const handleQuickRenew = async (domain: DomainRecord) => {
-    const path = `domains/${domain.id}`;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
     const baseYear = domain.expiresAt
       ? parseInt(domain.expiresAt.slice(0, 4), 10) || new Date().getFullYear()
       : new Date().getFullYear();
     const nextExpiry = `${baseYear + 1}-12-31`;
-    try {
-      await updateDoc(doc(db, 'domains', domain.id), {
-        expiresAt: nextExpiry,
-        updatedAt: serverTimestamp(),
-      });
+    const { data, error } = await supabase
+      .from('domains')
+      .update({ expires_at: nextExpiry })
+      .eq('id', domain.id)
+      .select('*')
+      .single();
+    if (!error && data) {
+      onDomainUpdated(mapDomainRow(data));
       setOpenMenuId(null);
-      onSelectDomainAction(domain, 'manage_domain');
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, path);
+      onSelectDomainAction(mapDomainRow(data), 'manage_domain');
     }
   };
 
   const handleDeleteDomain = async (domain: DomainRecord) => {
-    const path = `domains/${domain.id}`;
-    try {
-      await deleteDoc(doc(db, 'domains', domain.id));
-    } catch (err) {
-      handleFirestoreError(err, OperationType.DELETE, path);
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    const { error } = await supabase.from('domains').delete().eq('id', domain.id);
+    if (!error) {
+      onDomainDeleted(domain.id);
     }
     setOpenMenuId(null);
   };

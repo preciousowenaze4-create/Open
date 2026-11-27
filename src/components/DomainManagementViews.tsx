@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { doc, updateDoc, serverTimestamp } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { getSupabaseClient, mapDomainRow } from '../supabase';
 import { DomainRecord, NameserverVerificationResult, PortalSection } from '../types';
 import {
   Cloud,
@@ -119,6 +118,7 @@ interface ManageNameserversViewProps {
   onSelectDomain: (domain: DomainRecord) => void;
   onOpenCloudflare: (domain: DomainRecord) => void;
   onNavigate: (sec: PortalSection) => void;
+  onDomainUpdated: (domain: DomainRecord) => void;
   sessionToken?: string;
 }
 
@@ -128,6 +128,7 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
   onSelectDomain,
   onOpenCloudflare,
   onNavigate,
+  onDomainUpdated,
   sessionToken,
 }) => {
   const [mode, setMode] = useState<'default' | 'custom'>('custom');
@@ -207,26 +208,29 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
         setVerification(verifiedResult);
       }
 
-      const path = `domains/${activeDomain.id}`;
-      try {
-        const isCf =
-          mode === 'custom' &&
-          (verifiedResult?.usesCloudflareNs ||
-            payloadNs.some((n) => n.endsWith('.ns.cloudflare.com')));
-        await updateDoc(doc(db, 'domains', activeDomain.id), {
-          nameserverMode: mode,
-          nameservers: mode === 'custom' ? payloadNs : [],
-          cloudflareAccountLabel:
-            verifiedResult?.detectedProvider || finalProviderName,
-          status:
-            isCf || activeDomain.cloudflareZoneId ? 'cloudflare_connected' : 'active',
-          cloudflareStatus:
-            verifiedResult?.cloudflareZone?.status ||
-            (mode === 'custom' ? 'nameservers_verified' : 'default'),
-          updatedAt: serverTimestamp(),
-        });
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, path);
+      const isCf =
+        mode === 'custom' &&
+        (verifiedResult?.usesCloudflareNs ||
+          payloadNs.some((n) => n.endsWith('.ns.cloudflare.com')));
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        const { data: updatedRow, error: dbErr } = await supabase
+          .from('domains')
+          .update({
+            nameserver_mode: mode,
+            nameservers: mode === 'custom' ? payloadNs : [],
+            cloudflare_account_label: verifiedResult?.detectedProvider || finalProviderName,
+            status: isCf || activeDomain.cloudflareZoneId ? 'cloudflare_connected' : 'active',
+            cloudflare_status:
+              verifiedResult?.cloudflareZone?.status ||
+              (mode === 'custom' ? 'nameservers_verified' : 'default'),
+          })
+          .eq('id', activeDomain.id)
+          .select('*')
+          .single();
+
+        if (dbErr) throw dbErr;
+        if (updatedRow) onDomainUpdated(mapDomainRow(updatedRow));
       }
 
       if (mode === 'default') {
@@ -456,6 +460,7 @@ interface ManageDomainViewProps {
   onOpenCloudflare: (domain: DomainRecord) => void;
   onNavigate: (sec: PortalSection) => void;
   onBuildSite: (domain: DomainRecord) => void;
+  onDomainUpdated: (domain: DomainRecord) => void;
 }
 
 export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
@@ -465,6 +470,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
   onOpenCloudflare,
   onNavigate,
   onBuildSite,
+  onDomainUpdated,
 }) => {
   const [copied, setCopied] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -472,16 +478,22 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
 
   const handleToggleLock = async () => {
     if (!activeDomain) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
     setUpdating(true);
     try {
-      await updateDoc(doc(db, 'domains', activeDomain.id), {
-        registrarLock: !(activeDomain.registrarLock ?? true),
-        updatedAt: serverTimestamp(),
-      });
+      const { data, error } = await supabase
+        .from('domains')
+        .update({ registrar_lock: !(activeDomain.registrarLock ?? true) })
+        .eq('id', activeDomain.id)
+        .select('*')
+        .single();
+      if (error) throw error;
+      if (data) onDomainUpdated(mapDomainRow(data));
       setNotice('Registrar lock updated.');
       setTimeout(() => setNotice(''), 3000);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `domains/${activeDomain.id}`);
+    } catch (err: any) {
+      setNotice(err.message || 'Could not update registrar lock.');
     } finally {
       setUpdating(false);
     }
@@ -489,16 +501,22 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
 
   const handleToggleAutoRenew = async () => {
     if (!activeDomain) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
     setUpdating(true);
     try {
-      await updateDoc(doc(db, 'domains', activeDomain.id), {
-        autoRenew: !activeDomain.autoRenew,
-        updatedAt: serverTimestamp(),
-      });
+      const { data, error } = await supabase
+        .from('domains')
+        .update({ auto_renew: !activeDomain.autoRenew })
+        .eq('id', activeDomain.id)
+        .select('*')
+        .single();
+      if (error) throw error;
+      if (data) onDomainUpdated(mapDomainRow(data));
       setNotice('Auto-renewal preference updated.');
       setTimeout(() => setNotice(''), 3000);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `domains/${activeDomain.id}`);
+    } catch (err: any) {
+      setNotice(err.message || 'Could not update auto-renewal preference.');
     } finally {
       setUpdating(false);
     }
@@ -720,6 +738,7 @@ interface EditContactViewProps {
   defaultEmail: string;
   onSelectDomain: (domain: DomainRecord) => void;
   onNavigate: (sec: PortalSection) => void;
+  onDomainUpdated: (domain: DomainRecord) => void;
 }
 
 export const EditContactView: React.FC<EditContactViewProps> = ({
@@ -729,6 +748,7 @@ export const EditContactView: React.FC<EditContactViewProps> = ({
   defaultEmail,
   onSelectDomain,
   onNavigate,
+  onDomainUpdated,
 }) => {
   const [contactName, setContactName] = useState(defaultName);
   const [contactOrg, setContactOrg] = useState('');
@@ -751,20 +771,26 @@ export const EditContactView: React.FC<EditContactViewProps> = ({
   const handleSaveContact = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeDomain) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
     setSaving(true);
     setSaved(false);
     try {
-      await updateDoc(doc(db, 'domains', activeDomain.id), {
-        contactName: contactName.trim().slice(0, 120),
-        contactOrg: contactOrg.trim().slice(0, 120),
-        contactEmail: contactEmail.trim().slice(0, 200),
-        contactPhone: contactPhone.trim().slice(0, 40),
-        contactCountry: contactCountry.trim().slice(0, 80),
-        updatedAt: serverTimestamp(),
-      });
+      const { data, error } = await supabase
+        .from('domains')
+        .update({
+          contact_name: contactName.trim().slice(0, 120),
+          contact_org: contactOrg.trim().slice(0, 120),
+          contact_email: contactEmail.trim().slice(0, 200),
+          contact_phone: contactPhone.trim().slice(0, 40),
+          contact_country: contactCountry.trim().slice(0, 80),
+        })
+        .eq('id', activeDomain.id)
+        .select('*')
+        .single();
+      if (error) throw error;
+      if (data) onDomainUpdated(mapDomainRow(data));
       setSaved(true);
-    } catch (err) {
-      handleFirestoreError(err, OperationType.UPDATE, `domains/${activeDomain.id}`);
     } finally {
       setSaving(false);
     }

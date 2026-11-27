@@ -124,14 +124,25 @@ function parseBrowserPublicSuffixText(text: string): BrowserSuffixCatalog {
     ...Array.from(icannSet).filter((t) => !prioritySet.has(t)),
   ];
 
-  const allTargets: { tld: string; isFree: boolean; providerLabel: string }[] = [...freeTargets];
+  const seenAll = new Set<string>();
+  const allTargets: { tld: string; isFree: boolean; providerLabel: string }[] = [];
+
   for (const tld of icannList) {
-    if (!seenFree.has(tld)) {
+    if (!seenAll.has(tld)) {
+      seenAll.add(tld);
+      const freeMatch = CURATED_FREE_OPEN_DOMAINS.find((c) => c.tld === tld);
       allTargets.push({
         tld,
-        isFree: false,
-        providerLabel: 'IANA / ICANN Official Extension',
+        isFree: Boolean(freeMatch),
+        providerLabel: freeMatch ? freeMatch.providerLabel : 'IANA / ICANN Official Extension',
       });
+    }
+  }
+
+  for (const item of freeTargets) {
+    if (!seenAll.has(item.tld)) {
+      seenAll.add(item.tld);
+      allTargets.push(item);
     }
   }
 
@@ -140,6 +151,26 @@ function parseBrowserPublicSuffixText(text: string): BrowserSuffixCatalog {
     icannTlds: icannList,
     allTargets,
   };
+}
+
+async function fetchBrowserIanaRootTlds(signal?: AbortSignal): Promise<string[]> {
+  try {
+    const resp = await fetch('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', { signal });
+    if (!resp.ok) return [];
+    const text = await resp.text();
+    const list: string[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const clean = line.trim().toLowerCase();
+      if (!clean || clean.startsWith('#') || clean.startsWith('xn--')) continue;
+      if (/^[a-z0-9-]+$/.test(clean)) {
+        list.push(`.${clean}`);
+      }
+    }
+    return list;
+  } catch (err: any) {
+    if (err?.name === 'AbortError') throw err;
+    return [];
+  }
 }
 
 async function loadBrowserPublicSuffixCatalog(signal?: AbortSignal): Promise<BrowserSuffixCatalog> {
@@ -157,12 +188,32 @@ async function loadBrowserPublicSuffixCatalog(signal?: AbortSignal): Promise<Bro
     'https://raw.githubusercontent.com/publicsuffix/list/master/public_suffix_list.dat',
   ];
 
+  const ianaPromise = fetchBrowserIanaRootTlds(signal);
+
   for (const url of sources) {
     try {
       const resp = await fetch(url, { signal });
       if (resp.ok) {
-        const text = await resp.text();
+        const [text, ianaExtras] = await Promise.all([resp.text(), ianaPromise]);
         const catalog = parseBrowserPublicSuffixText(text);
+        if (ianaExtras.length > 0) {
+          const icannExisting = new Set(catalog.icannTlds);
+          const allExisting = new Set(catalog.allTargets.map((t) => t.tld));
+          for (const ext of ianaExtras) {
+            if (!icannExisting.has(ext)) {
+              icannExisting.add(ext);
+              catalog.icannTlds.push(ext);
+            }
+            if (!allExisting.has(ext)) {
+              allExisting.add(ext);
+              catalog.allTargets.push({
+                tld: ext,
+                isFree: false,
+                providerLabel: 'IANA / ICANN Official Extension',
+              });
+            }
+          }
+        }
         if (catalog.allTargets.length > 500) {
           cachedBrowserCatalog = catalog;
           browserCatalogFetchedAt = Date.now();
@@ -179,17 +230,17 @@ async function loadBrowserPublicSuffixCatalog(signal?: AbortSignal): Promise<Bro
     isFree: true,
     providerLabel: f.providerLabel,
   }));
-  const fallbackSet = new Set(fallbackFree.map((f) => f.tld));
+  const fallbackIcann = PRIORITY_GLOBAL_TLDS.map((t) => ({
+    tld: t,
+    isFree: false,
+    providerLabel: 'IANA / ICANN Official Extension',
+  }));
   return {
     freeTargets: fallbackFree,
     icannTlds: PRIORITY_GLOBAL_TLDS,
     allTargets: [
-      ...fallbackFree,
-      ...PRIORITY_GLOBAL_TLDS.filter((t) => !fallbackSet.has(t)).map((t) => ({
-        tld: t,
-        isFree: false,
-        providerLabel: 'IANA / ICANN Official Extension',
-      })),
+      ...fallbackIcann,
+      ...fallbackFree.filter((f) => !PRIORITY_GLOBAL_TLDS.includes(f.tld)),
     ],
   };
 }
@@ -286,6 +337,53 @@ export async function getTldStatsRealTime(): Promise<{
   };
 }
 
+const BROWSER_PREFIXES = [
+  'get', 'use', 'try', 'my', 'go', 'hey', 'join', 'meet', 'build', 'run',
+  'open', 'cloud', 'next', 'pro', 'fast', 'live', 'real', 'true', 'super', 'team',
+];
+
+const BROWSER_SUFFIXES = [
+  'app', 'hq', 'io', 'dev', 'tech', 'cloud', 'hub', 'lab', 'web', 'pro',
+  'ai', 'go', 'live', 'online', 'site', 'zone', 'core', 'base', 'flow', 'sync',
+  'link', 'now', 'box', 'bit', 'plus', 'next', 'one', 'x', 'studio', 'works',
+  'space', 'world', 'net', 'sys', 'digital', 'stack', 'port', 'api', 'data', 'ops',
+];
+
+function buildBrowserEndlessCandidate(
+  cleanName: string,
+  variationIndex: number,
+  targets: { tld: string; isFree: boolean; providerLabel: string }[]
+) {
+  const pool = targets.slice(0, Math.min(24, targets.length));
+  const poolLen = Math.max(1, pool.length);
+  const target = pool[variationIndex % poolLen];
+  const round = Math.floor(variationIndex / poolLen);
+  const singleModCount = BROWSER_PREFIXES.length + BROWSER_SUFFIXES.length;
+
+  let hostLabel = cleanName;
+  if (round < BROWSER_PREFIXES.length) {
+    hostLabel = `${BROWSER_PREFIXES[round]}${cleanName}`;
+  } else if (round < singleModCount) {
+    hostLabel = `${cleanName}${BROWSER_SUFFIXES[round - BROWSER_PREFIXES.length]}`;
+  } else {
+    const comboIdx = round - singleModCount;
+    const pIdx = comboIdx % BROWSER_PREFIXES.length;
+    const sIdx = Math.floor(comboIdx / BROWSER_PREFIXES.length) % BROWSER_SUFFIXES.length;
+    const epoch = Math.floor(comboIdx / (BROWSER_PREFIXES.length * BROWSER_SUFFIXES.length));
+    hostLabel =
+      epoch === 0
+        ? `${BROWSER_PREFIXES[pIdx]}${cleanName}${BROWSER_SUFFIXES[sIdx]}`
+        : `${cleanName}-${BROWSER_SUFFIXES[sIdx]}${epoch}`;
+  }
+
+  return {
+    domain: `${hostLabel.slice(0, 60)}${target.tld}`,
+    tld: target.tld,
+    isFree: target.isFree,
+    providerLabel: target.providerLabel,
+  };
+}
+
 export async function searchDomainsRealTime(params: {
   query: string;
   mode: 'free' | 'all';
@@ -327,19 +425,28 @@ export async function searchDomainsRealTime(params: {
     };
   } catch (err: any) {
     if (err?.name === 'AbortError') throw err;
-    const cleanName = params.query
-      .toLowerCase()
-      .trim()
+    const rawQuery = params.query.trim().toLowerCase();
+    const explicitExtMatch = rawQuery.match(/^([a-z0-9-]+)(\.[a-z0-9.-]+)$/i);
+    const cleanName = (explicitExtMatch ? explicitExtMatch[1] : rawQuery)
       .replace(/\.[a-z0-9.-]+$/i, '')
       .replace(/[^a-z0-9-]/g, '')
       .replace(/^-+|-+$/g, '');
+    const explicitExt = explicitExtMatch ? explicitExtMatch[2].toLowerCase() : '';
 
     if (cleanName.length < 2) {
       throw new Error('Enter at least 2 alphanumeric characters for your app name.');
     }
 
     const catalog = await loadBrowserPublicSuffixCatalog(params.signal);
-    let targets = params.mode === 'free' ? catalog.freeTargets : catalog.allTargets;
+    let targets = params.mode === 'free' ? [...catalog.freeTargets] : [...catalog.allTargets];
+
+    if (explicitExt) {
+      const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
+      if (existingIdx > 0) {
+        const [found] = targets.splice(existingIdx, 1);
+        targets.unshift(found);
+      }
+    }
 
     const filterText = (params.tldFilter || '').toLowerCase().trim();
     if (filterText) {
@@ -348,22 +455,51 @@ export async function searchDomainsRealTime(params: {
       );
     }
 
-    const totalCount = targets.length;
+    if (targets.length === 0) {
+      return {
+        query: cleanName,
+        mode: params.mode,
+        page: params.page,
+        cursor: startCursor,
+        nextCursor: startCursor,
+        limit: params.limit,
+        totalExtensions: 0,
+        hasMore: false,
+        results: [],
+      };
+    }
+
+    const totalExactCount = targets.length;
     const availableResults: DomainSearchResult[] = [];
-    let idx = Math.min(startCursor, totalCount);
+    let idx = startCursor;
     let scanned = 0;
     const maxScan = 98;
 
-    while (idx < totalCount && availableResults.length < params.limit && scanned < maxScan) {
+    while (availableResults.length < params.limit && scanned < maxScan) {
       const remainingNeeded = params.limit - availableResults.length;
-      const batchSize = Math.min(14, remainingNeeded + 4, totalCount - idx, maxScan - scanned);
+      const batchSize = Math.min(14, remainingNeeded + 4, maxScan - scanned);
       if (batchSize <= 0) break;
 
-      const batchTargets = targets.slice(idx, idx + batchSize);
+      const batchCandidates = [];
+      for (let k = 0; k < batchSize; k++) {
+        const curIdx = idx + k;
+        if (curIdx < totalExactCount) {
+          const item = targets[curIdx];
+          batchCandidates.push({
+            domain: `${cleanName}${item.tld}`,
+            tld: item.tld,
+            isFree: item.isFree,
+            providerLabel: item.providerLabel,
+          });
+        } else {
+          batchCandidates.push(buildBrowserEndlessCandidate(cleanName, curIdx - totalExactCount, targets));
+        }
+      }
+
       const batchChecks = await Promise.all(
-        batchTargets.map((item) =>
+        batchCandidates.map((item) =>
           checkDomainViaGoogleDoH(
-            `${cleanName}${item.tld}`,
+            item.domain,
             item.tld,
             item.isFree,
             item.providerLabel,
@@ -391,8 +527,8 @@ export async function searchDomainsRealTime(params: {
       cursor: startCursor,
       nextCursor: idx,
       limit: params.limit,
-      totalExtensions: totalCount,
-      hasMore: idx < totalCount,
+      totalExtensions: totalExactCount,
+      hasMore: true,
       results: availableResults,
     };
   }
@@ -568,15 +704,7 @@ export async function verifyDnsRecordRealTime(payload: {
   type: string;
   host: string;
   value: string;
-}): Promise<{
-  fqdn: string;
-  type: string;
-  livePropagated: boolean;
-  targetReachable: boolean;
-  targetIps: string[];
-  liveAnswers: string[];
-  checkedAt: string;
-}> {
+}): Promise<import('../types').DnsRecordVerificationResult> {
   try {
     return await fetchJson('/api/dns/verify-record', {
       method: 'POST',
@@ -585,7 +713,9 @@ export async function verifyDnsRecordRealTime(payload: {
     });
   } catch {
     const cleanDomain = payload.domain.toLowerCase().trim();
+    const cleanType = payload.type.toUpperCase().trim();
     const cleanHost = payload.host.toLowerCase().trim();
+    const cleanValue = payload.value.trim();
     const fqdn =
       cleanHost === '@' || cleanHost === cleanDomain
         ? cleanDomain
@@ -593,36 +723,76 @@ export async function verifyDnsRecordRealTime(payload: {
           ? cleanHost
           : `${cleanHost}.${cleanDomain}`;
 
-    const [fqdnRes, targetRes] = await Promise.all([
-      fetch(`https://dns.google/resolve?name=${encodeURIComponent(fqdn)}&type=${encodeURIComponent(payload.type)}`)
+    const isDirectIp = cleanType === 'A' || cleanType === 'AAAA';
+    const isHostTarget = ['CNAME', 'MX', 'NS', 'PTR', 'DNAME', 'SRV', 'HTTPS', 'SVCB'].includes(cleanType);
+    const targetCandidate = cleanValue
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/.*$/, '')
+      .replace(/\.+$/, '')
+      .trim();
+
+    const [fqdnRes, cfRes, targetRes] = await Promise.all([
+      fetch(`https://dns.google/resolve?name=${encodeURIComponent(fqdn)}&type=${encodeURIComponent(cleanType)}`)
         .then((r) => r.json())
         .catch(() => ({ Status: 2, Answer: [] })),
-      payload.type === 'CNAME' || payload.type === 'MX'
-        ? fetch(`https://dns.google/resolve?name=${encodeURIComponent(payload.value.replace(/\.+$/, ''))}&type=A`)
+      fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(fqdn)}&type=${encodeURIComponent(cleanType)}`, {
+        headers: { accept: 'application/dns-json' },
+      })
+        .then((r) => r.json())
+        .catch(() => ({ Status: 2, Answer: [] })),
+      isHostTarget
+        ? fetch(`https://dns.google/resolve?name=${encodeURIComponent(targetCandidate)}&type=A`)
             .then((r) => r.json())
             .catch(() => ({ Status: 2, Answer: [] }))
         : Promise.resolve(null),
     ]);
 
-    const liveAnswers = (fqdnRes.Answer || []).map((a: any) =>
-      String(a.data || '').replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase()
+    const liveAnswers: string[] = Array.from(
+      new Set(
+        [...(fqdnRes.Answer || []), ...(cfRes.Answer || [])]
+          .map((a: any) => String(a.data || '').replace(/^"+|"+$/g, '').replace(/\.$/, '').trim())
+          .filter(Boolean)
+      )
     );
-    const normalizedExpected = payload.value.replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase();
+
+    const normalizedExpected = cleanValue.replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase();
     const livePropagated = liveAnswers.some(
-      (ans: string) => ans === normalizedExpected || ans.includes(normalizedExpected)
+      (ans) => ans.toLowerCase() === normalizedExpected || ans.toLowerCase().includes(normalizedExpected)
     );
-    const targetIps = (targetRes?.Answer || []).map((a: any) => String(a.data));
+
+    const targetIps: string[] = isDirectIp
+      ? [cleanValue]
+      : (targetRes?.Answer || []).filter((a: any) => a.type === 1).map((a: any) => String(a.data));
+
+    let rdapNetwork: { name?: string; handle?: string; cidr?: string; org?: string } | null = null;
+    let resolvedProvider: string | undefined;
+    const primaryIp = targetIps.find((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
+    if (primaryIp) {
+      try {
+        const r = await fetch(`https://rdap.arin.net/registry/ip/${encodeURIComponent(primaryIp)}`, {
+          headers: { accept: 'application/rdap+json, application/json' },
+        });
+        if (r.ok) {
+          const j = await r.json();
+          const fn = j.entities?.[0]?.vcardArray?.[1]?.find?.((v: any) => Array.isArray(v) && v[0] === 'fn')?.[3];
+          rdapNetwork = { name: j.name, handle: j.handle, org: fn };
+          resolvedProvider = fn || j.name;
+        }
+      } catch {
+        // ignore browser rdap timeout
+      }
+    }
 
     return {
       fqdn,
-      type: payload.type,
+      type: cleanType,
       livePropagated,
-      targetReachable:
-        payload.type === 'CNAME' || payload.type === 'MX'
-          ? Boolean(targetRes && targetRes.Status === 0 && targetIps.length > 0)
-          : true,
-      targetIps: targetIps.slice(0, 3),
+      targetReachable: isDirectIp ? Boolean(rdapNetwork || primaryIp) : targetIps.length > 0 || cleanType === 'TXT',
+      targetIps: targetIps.slice(0, 4),
+      resolvedProvider,
+      rdapNetwork,
       liveAnswers,
+      resolversChecked: ['Google 8.8.8.8', 'Cloudflare 1.1.1.1', 'ARIN RDAP Registry'],
       checkedAt: new Date().toISOString(),
     };
   }

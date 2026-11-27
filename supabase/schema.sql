@@ -252,10 +252,23 @@ create table if not exists public.dns_records (
 -- Safe upgrade if earlier 4-type dns_records table already exists
 alter table public.dns_records drop constraint if exists dns_records_record_type_check;
 alter table public.dns_records add constraint dns_records_record_type_check check (record_type ~ '^[A-Z0-9-]{1,20}$');
+alter table public.dns_records add column if not exists resolved_provider text;
+alter table public.dns_records add column if not exists resolved_ips text[] not null default '{}';
+alter table public.dns_records add column if not exists reverse_ptr text;
+alter table public.dns_records add column if not exists last_verified_at timestamptz;
 
 -- Safe upgrade for Private Nameservers & EPP Code on domains table
 alter table public.domains add column if not exists private_nameservers jsonb not null default '[]'::jsonb;
 alter table public.domains add column if not exists epp_code text;
+
+-- 6. Collected Global & Free Domain Extensions Registry
+create table if not exists public.domain_extensions (
+  tld text primary key check (tld ~ '^\.[a-z0-9-]+(\.[a-z0-9-]+){0,2}$'),
+  provider_label text not null default 'OpenWorld Free Registry',
+  is_free boolean not null default true,
+  source text not null default 'community',
+  created_at timestamptz not null default now()
+);
 
 create index if not exists idx_dns_records_user_domain on public.dns_records(user_id, domain_id);
 
@@ -265,6 +278,7 @@ create trigger trg_dns_records_updated_at
   for each row execute function public.set_updated_at();
 
 alter table public.dns_records enable row level security;
+alter table public.domain_extensions enable row level security;
 
 drop policy if exists "dns_records_select_own" on public.dns_records;
 create policy "dns_records_select_own"
@@ -291,7 +305,19 @@ create policy "dns_records_delete_own"
   to authenticated
   using ((select auth.uid()) = user_id);
 
--- Enable Realtime updates for all 5 tables (safe if re-run)
+drop policy if exists "domain_extensions_select_all" on public.domain_extensions;
+create policy "domain_extensions_select_all"
+  on public.domain_extensions for select
+  to anon, authenticated
+  using (true);
+
+drop policy if exists "domain_extensions_insert_auth" on public.domain_extensions;
+create policy "domain_extensions_insert_auth"
+  on public.domain_extensions for insert
+  to authenticated
+  with check (char_length(tld) between 2 and 64);
+
+-- Enable Realtime updates for all 6 tables (safe if re-run)
 do $$
 begin
   alter publication supabase_realtime add table public.profiles;
@@ -319,5 +345,11 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.dns_records;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.domain_extensions;
 exception when duplicate_object then null;
 end $$;

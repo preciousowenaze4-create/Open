@@ -167,6 +167,10 @@ export function mapDnsRecordRow(row: any): DnsRecordItem {
     proxied: Boolean(row.proxied),
     cloudflareRecordId: row.cloudflare_record_id || undefined,
     syncStatus: row.sync_status || 'saved',
+    resolvedProvider: row.resolved_provider || undefined,
+    resolvedIps: Array.isArray(row.resolved_ips) ? row.resolved_ips : [],
+    reversePtr: row.reverse_ptr || undefined,
+    lastVerifiedAt: row.last_verified_at || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

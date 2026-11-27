@@ -99,8 +99,32 @@ export interface DnsRecordItem {
   proxied?: boolean;
   cloudflareRecordId?: string;
   syncStatus: 'saved' | 'propagated' | 'cloudflare_synced';
+  resolvedProvider?: string;
+  resolvedIps?: string[];
+  reversePtr?: string;
+  lastVerifiedAt?: string;
   createdAt?: unknown;
   updatedAt?: unknown;
+}
+
+export interface DnsRecordVerificationResult {
+  fqdn: string;
+  type: string;
+  livePropagated: boolean;
+  targetReachable: boolean;
+  targetIps: string[];
+  resolvedProvider?: string;
+  reversePtr?: string;
+  rdapNetwork?: {
+    name?: string;
+    handle?: string;
+    cidr?: string;
+    org?: string;
+  } | null;
+  liveAnswers: string[];
+  liveDomainNameservers?: string[];
+  resolversChecked?: string[];
+  checkedAt: string;
 }
 
 export interface CloudflareDnsRecord {

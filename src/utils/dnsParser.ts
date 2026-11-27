@@ -173,6 +173,52 @@ export function parseRawDnsText(
     return kvResults;
   }
 
+  // 1b. Stacked vertical UI table copies (e.g. from Vercel/Cloudflare dashboard):
+  //     Type \n A \n Name \n @ \n Value \n 216.198.79.1
+  const stackedLines = text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const stackedResults: ParsedDnsInput[] = [];
+  let curStacked: Partial<ParsedDnsInput> = {};
+  for (let i = 0; i < stackedLines.length - 1; i++) {
+    const label = stackedLines[i].toLowerCase().replace(/:$/, '');
+    const nextVal = stackedLines[i + 1].trim();
+    if (/^(record\s*)?type$/.test(label) && isSupportedType(nextVal, knownSet)) {
+      if (curStacked.type && curStacked.value) {
+        stackedResults.push({
+          type: curStacked.type,
+          host: curStacked.host || '@',
+          value: curStacked.value,
+          priority: curStacked.priority,
+        });
+        curStacked = {};
+      }
+      curStacked.type = nextVal.toUpperCase();
+      i += 1;
+    } else if (/^(name|host|subdomain)$/.test(label)) {
+      curStacked.host = normalizeDnsHost(nextVal, domainName);
+      i += 1;
+    } else if (/^(value|target|content|points?\s*to|address|destination|data)$/.test(label)) {
+      curStacked.value = stripQuotes(nextVal).replace(/\.+$/, '');
+      i += 1;
+    } else if (/^(priority|prio)$/.test(label) && /^\d+$/.test(nextVal)) {
+      curStacked.priority = parseInt(nextVal, 10);
+      i += 1;
+    }
+  }
+  if (curStacked.type && curStacked.value) {
+    stackedResults.push({
+      type: curStacked.type,
+      host: curStacked.host || '@',
+      value: curStacked.value,
+      priority: curStacked.priority,
+    });
+  }
+  if (stackedResults.length > 0) {
+    return stackedResults;
+  }
+
   // 2. Line-by-line parsing
   const lines = text
     .split(/\r?\n/)

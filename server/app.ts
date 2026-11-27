@@ -149,14 +149,27 @@ function parsePublicSuffixText(text: string): SuffixCatalog {
     ...Array.from(icannSet).filter((t) => !prioritySet.has(t)),
   ];
 
-  const allTargets: { tld: string; isFree: boolean; providerLabel: string }[] = [...freeTargets];
+  // In Global mode ("All Global Extensions"), surface .com / .net / .org / .io / .dev / .ai first,
+  // followed by all ICANN TLDs and open public-suffix registries so popular extensions are never buried.
+  const seenAll = new Set<string>();
+  const allTargets: { tld: string; isFree: boolean; providerLabel: string }[] = [];
+
   for (const tld of icannList) {
-    if (!seenFree.has(tld)) {
+    if (!seenAll.has(tld)) {
+      seenAll.add(tld);
+      const freeMatch = CURATED_FREE_OPEN_DOMAINS.find((c) => c.tld === tld);
       allTargets.push({
         tld,
-        isFree: false,
-        providerLabel: 'IANA / ICANN Official Extension',
+        isFree: Boolean(freeMatch),
+        providerLabel: freeMatch ? freeMatch.providerLabel : 'IANA / ICANN Official Extension',
       });
+    }
+  }
+
+  for (const item of freeTargets) {
+    if (!seenAll.has(item.tld)) {
+      seenAll.add(item.tld);
+      allTargets.push(item);
     }
   }
 
@@ -165,6 +178,30 @@ function parsePublicSuffixText(text: string): SuffixCatalog {
     icannTlds: icannList,
     allTargets,
   };
+}
+
+async function fetchIanaRootTlds(): Promise<string[]> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    const resp = await fetch('https://data.iana.org/TLD/tlds-alpha-by-domain.txt', {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!resp.ok) return [];
+    const text = await resp.text();
+    const list: string[] = [];
+    for (const line of text.split(/\r?\n/)) {
+      const clean = line.trim().toLowerCase();
+      if (!clean || clean.startsWith('#') || clean.startsWith('xn--')) continue;
+      if (/^[a-z0-9-]+$/.test(clean)) {
+        list.push(`.${clean}`);
+      }
+    }
+    return list;
+  } catch {
+    return [];
+  }
 }
 
 async function getLivePublicSuffixCatalog(): Promise<SuffixCatalog> {
@@ -178,6 +215,8 @@ async function getLivePublicSuffixCatalog(): Promise<SuffixCatalog> {
     'https://raw.githubusercontent.com/publicsuffix/list/master/public_suffix_list.dat',
   ];
 
+  const ianaPromise = fetchIanaRootTlds();
+
   for (const url of sources) {
     try {
       const controller = new AbortController();
@@ -185,8 +224,28 @@ async function getLivePublicSuffixCatalog(): Promise<SuffixCatalog> {
       const resp = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
       if (resp.ok) {
-        const text = await resp.text();
+        const [text, ianaExtras] = await Promise.all([resp.text(), ianaPromise]);
         const catalog = parsePublicSuffixText(text);
+
+        if (ianaExtras.length > 0) {
+          const icannExisting = new Set(catalog.icannTlds);
+          const allExisting = new Set(catalog.allTargets.map((t) => t.tld));
+          for (const ext of ianaExtras) {
+            if (!icannExisting.has(ext)) {
+              icannExisting.add(ext);
+              catalog.icannTlds.push(ext);
+            }
+            if (!allExisting.has(ext)) {
+              allExisting.add(ext);
+              catalog.allTargets.push({
+                tld: ext,
+                isFree: false,
+                providerLabel: 'IANA / ICANN Official Extension',
+              });
+            }
+          }
+        }
+
         if (catalog.allTargets.length > 500) {
           cachedCatalog = catalog;
           catalogFetchedAt = Date.now();
@@ -204,15 +263,17 @@ async function getLivePublicSuffixCatalog(): Promise<SuffixCatalog> {
     providerLabel: f.providerLabel,
   }));
   const fallbackSet = new Set(fallbackFree.map((f) => f.tld));
+  const fallbackIcann = PRIORITY_GLOBAL_TLDS.map((t) => ({
+    tld: t,
+    isFree: false,
+    providerLabel: 'IANA / ICANN Official Extension',
+  }));
   const fallbackAll = [
-    ...fallbackFree,
-    ...PRIORITY_GLOBAL_TLDS.filter((t) => !fallbackSet.has(t)).map((t) => ({
-      tld: t,
-      isFree: false,
-      providerLabel: 'IANA / ICANN Official Extension',
-    })),
+    ...fallbackIcann,
+    ...fallbackFree.filter((f) => !PRIORITY_GLOBAL_TLDS.includes(f.tld)),
   ];
 
+  void fallbackSet;
   return {
     freeTargets: fallbackFree,
     icannTlds: PRIORITY_GLOBAL_TLDS,
@@ -300,6 +361,53 @@ async function checkRealDomainAvailability(
   };
 }
 
+const BRAND_PREFIXES = [
+  'get', 'use', 'try', 'my', 'go', 'hey', 'join', 'meet', 'build', 'run',
+  'open', 'cloud', 'next', 'pro', 'fast', 'live', 'real', 'true', 'super', 'team',
+];
+
+const BRAND_SUFFIXES = [
+  'app', 'hq', 'io', 'dev', 'tech', 'cloud', 'hub', 'lab', 'web', 'pro',
+  'ai', 'go', 'live', 'online', 'site', 'zone', 'core', 'base', 'flow', 'sync',
+  'link', 'now', 'box', 'bit', 'plus', 'next', 'one', 'x', 'studio', 'works',
+  'space', 'world', 'net', 'sys', 'digital', 'stack', 'port', 'api', 'data', 'ops',
+];
+
+function buildEndlessCandidate(
+  cleanName: string,
+  variationIndex: number,
+  targets: { tld: string; isFree: boolean; providerLabel: string }[]
+): { domain: string; tld: string; isFree: boolean; providerLabel: string } {
+  const pool = targets.slice(0, Math.min(24, targets.length));
+  const poolLen = Math.max(1, pool.length);
+  const target = pool[variationIndex % poolLen];
+  const round = Math.floor(variationIndex / poolLen);
+
+  let hostLabel = cleanName;
+  const singleModCount = BRAND_PREFIXES.length + BRAND_SUFFIXES.length;
+  if (round < BRAND_PREFIXES.length) {
+    hostLabel = `${BRAND_PREFIXES[round]}${cleanName}`;
+  } else if (round < singleModCount) {
+    hostLabel = `${cleanName}${BRAND_SUFFIXES[round - BRAND_PREFIXES.length]}`;
+  } else {
+    const comboIdx = round - singleModCount;
+    const pIdx = comboIdx % BRAND_PREFIXES.length;
+    const sIdx = Math.floor(comboIdx / BRAND_PREFIXES.length) % BRAND_SUFFIXES.length;
+    const epoch = Math.floor(comboIdx / (BRAND_PREFIXES.length * BRAND_SUFFIXES.length));
+    hostLabel =
+      epoch === 0
+        ? `${BRAND_PREFIXES[pIdx]}${cleanName}${BRAND_SUFFIXES[sIdx]}`
+        : `${cleanName}-${BRAND_SUFFIXES[sIdx]}${epoch}`;
+  }
+
+  return {
+    domain: `${hostLabel.slice(0, 60)}${target.tld}`,
+    tld: target.tld,
+    isFree: target.isFree,
+    providerLabel: target.providerLabel,
+  };
+}
+
 app.get('/api/domains/tlds/stats', async (_req, res) => {
   const catalog = await getLivePublicSuffixCatalog();
   res.json({
@@ -310,13 +418,13 @@ app.get('/api/domains/tlds/stats', async (_req, res) => {
 });
 
 app.get('/api/domains/search', async (req, res) => {
-  const rawQuery = (req.query.q as string) || '';
-  const cleanName = rawQuery
-    .toLowerCase()
-    .trim()
+  const rawQuery = ((req.query.q as string) || '').trim().toLowerCase();
+  const explicitExtMatch = rawQuery.match(/^([a-z0-9-]+)(\.[a-z0-9.-]+)$/i);
+  const cleanName = (explicitExtMatch ? explicitExtMatch[1] : rawQuery)
     .replace(/\.[a-z0-9.-]+$/i, '')
     .replace(/[^a-z0-9-]/g, '')
     .replace(/^-+|-+$/g, '');
+  const explicitExt = explicitExtMatch ? explicitExtMatch[2].toLowerCase() : '';
 
   if (!cleanName || cleanName.length < 2) {
     return res.status(400).json({ error: 'Enter at least 2 alphanumeric characters for your app name.' });
@@ -330,7 +438,22 @@ app.get('/api/domains/search', async (req, res) => {
   const filterText = ((req.query.tldFilter as string) || '').toLowerCase().trim();
 
   const catalog = await getLivePublicSuffixCatalog();
-  let targets = mode === 'free' ? catalog.freeTargets : catalog.allTargets;
+  let targets = mode === 'free' ? [...catalog.freeTargets] : [...catalog.allTargets];
+
+  if (explicitExt) {
+    const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
+    if (existingIdx > 0) {
+      const [found] = targets.splice(existingIdx, 1);
+      targets.unshift(found);
+    } else if (existingIdx === -1 && /^\.[a-z0-9-]+(\.[a-z0-9-]+){0,2}$/.test(explicitExt)) {
+      const isKnownIana = catalog.icannTlds.includes(explicitExt);
+      targets.unshift({
+        tld: explicitExt,
+        isFree: !isKnownIana,
+        providerLabel: isKnownIana ? 'IANA / ICANN Official Extension' : 'Live Custom Extension',
+      });
+    }
+  }
 
   if (filterText) {
     targets = targets.filter(
@@ -338,21 +461,50 @@ app.get('/api/domains/search', async (req, res) => {
     );
   }
 
-  const totalCount = targets.length;
+  if (targets.length === 0) {
+    return res.json({
+      query: cleanName,
+      mode,
+      page,
+      cursor: startCursor,
+      nextCursor: startCursor,
+      limit,
+      totalExtensions: 0,
+      hasMore: false,
+      results: [],
+    });
+  }
+
+  const totalExactCount = targets.length;
   const availableResults: Awaited<ReturnType<typeof checkRealDomainAvailability>>[] = [];
-  let idx = Math.min(startCursor, totalCount);
+  let idx = startCursor;
   let scanned = 0;
   const maxScan = 98;
 
-  while (idx < totalCount && availableResults.length < limit && scanned < maxScan) {
+  while (availableResults.length < limit && scanned < maxScan) {
     const remainingNeeded = limit - availableResults.length;
-    const batchSize = Math.min(14, remainingNeeded + 4, totalCount - idx, maxScan - scanned);
+    const batchSize = Math.min(14, remainingNeeded + 4, maxScan - scanned);
     if (batchSize <= 0) break;
 
-    const batchTargets = targets.slice(idx, idx + batchSize);
+    const batchCandidates: { domain: string; tld: string; isFree: boolean; providerLabel: string }[] = [];
+    for (let k = 0; k < batchSize; k++) {
+      const curIdx = idx + k;
+      if (curIdx < totalExactCount) {
+        const item = targets[curIdx];
+        batchCandidates.push({
+          domain: `${cleanName}${item.tld}`,
+          tld: item.tld,
+          isFree: item.isFree,
+          providerLabel: item.providerLabel,
+        });
+      } else {
+        batchCandidates.push(buildEndlessCandidate(cleanName, curIdx - totalExactCount, targets));
+      }
+    }
+
     const batchChecks = await Promise.all(
-      batchTargets.map((item) =>
-        checkRealDomainAvailability(`${cleanName}${item.tld}`, item.tld, item.isFree, item.providerLabel)
+      batchCandidates.map((item) =>
+        checkRealDomainAvailability(item.domain, item.tld, item.isFree, item.providerLabel)
       )
     );
 
@@ -375,8 +527,8 @@ app.get('/api/domains/search', async (req, res) => {
     cursor: startCursor,
     nextCursor: idx,
     limit,
-    totalExtensions: totalCount,
-    hasMore: idx < totalCount,
+    totalExtensions: totalExactCount,
+    hasMore: true,
     results: availableResults,
   });
 });
@@ -728,6 +880,143 @@ app.get('/api/dns/record-types', async (_req, res) => {
   });
 });
 
+const PUBLIC_IPV4_CHECK = /^((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)$/;
+
+function isPublicRoutableIpv4(ip: string): boolean {
+  if (!PUBLIC_IPV4_CHECK.test(ip)) return false;
+  const [a, b] = ip.split('.').map(Number);
+  if (a === 0 || a === 10 || a === 127) return false;
+  if (a === 169 && b === 254) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 100 && b >= 64 && b <= 127) return false;
+  if (a >= 224) return false;
+  return true;
+}
+
+function isPublicRoutableIp(ip: string): boolean {
+  if (ip.includes(':')) {
+    const low = ip.toLowerCase();
+    if (low === '::1' || low === '::' || low.startsWith('fe80:') || low.startsWith('fc') || low.startsWith('fd')) {
+      return false;
+    }
+    return /^([0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}$/i.test(low);
+  }
+  return isPublicRoutableIpv4(ip);
+}
+
+function detectPlatformFromText(text: string): string | undefined {
+  const low = text.toLowerCase();
+  if (low.includes('vercel')) return 'Vercel, Inc.';
+  if (low.includes('cloudflare')) return 'Cloudflare, Inc.';
+  if (low.includes('netlify')) return 'Netlify / NS1';
+  if (low.includes('onrender') || low.includes('render.com')) return 'Render Cloud';
+  if (low.includes('railway')) return 'Railway';
+  if (low.includes('fly.dev') || low.includes('fly.io')) return 'Fly.io';
+  if (low.includes('github')) return 'GitHub Pages';
+  if (low.includes('amazon') || low.includes('aws')) return 'Amazon Web Services';
+  if (low.includes('google') || low.includes('firebase')) return 'Google Cloud / Firebase';
+  if (low.includes('microsoft') || low.includes('azure')) return 'Microsoft Azure';
+  if (low.includes('digitalocean')) return 'DigitalOcean';
+  if (low.includes('shopify')) return 'Shopify';
+  if (low.includes('webflow')) return 'Webflow';
+  if (low.includes('fastly')) return 'Fastly Edge';
+  if (low.includes('heroku')) return 'Heroku';
+  return undefined;
+}
+
+async function lookupIpRealInternetInfo(ip: string): Promise<{
+  ptr: string | undefined;
+  rdapNetwork: { name?: string; handle?: string; cidr?: string; org?: string } | null;
+  providerName: string | undefined;
+}> {
+  if (!isPublicRoutableIp(ip)) {
+    return { ptr: undefined, rdapNetwork: null, providerName: undefined };
+  }
+
+  let ptrPromise: Promise<string | undefined> = Promise.resolve(undefined);
+  if (PUBLIC_IPV4_CHECK.test(ip)) {
+    const revName = `${ip.split('.').reverse().join('.')}.in-addr.arpa`;
+    ptrPromise = (async () => {
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 3000);
+        const r = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(revName)}&type=PTR`, {
+          signal: ctl.signal,
+        });
+        clearTimeout(t);
+        if (!r.ok) return undefined;
+        const j = (await r.json()) as { Answer?: { data: string }[] };
+        const firstPtr = j.Answer?.[0]?.data;
+        return firstPtr ? firstPtr.replace(/\.$/, '').toLowerCase() : undefined;
+      } catch {
+        return undefined;
+      }
+    })();
+  }
+
+  const rdapPromise = (async () => {
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3500);
+      const r = await fetch(`https://rdap.arin.net/registry/ip/${encodeURIComponent(ip)}`, {
+        headers: { Accept: 'application/rdap+json, application/json' },
+        signal: ctl.signal,
+      });
+      clearTimeout(t);
+      if (!r.ok) return null;
+      const j = (await r.json()) as any;
+      let org: string | undefined;
+      if (Array.isArray(j.entities)) {
+        for (const ent of j.entities) {
+          const fn = ent?.vcardArray?.[1]?.find?.((v: any) => Array.isArray(v) && v[0] === 'fn')?.[3];
+          if (typeof fn === 'string' && fn.trim()) {
+            org = fn.trim();
+            break;
+          }
+        }
+      }
+      const cidrObj = Array.isArray(j.cidr0_cidrs) ? j.cidr0_cidrs[0] : null;
+      const cidr = cidrObj
+        ? `${cidrObj.v4prefix || cidrObj.v6prefix}/${cidrObj.length}`
+        : undefined;
+      return {
+        name: typeof j.name === 'string' ? j.name : undefined,
+        handle: typeof j.handle === 'string' ? j.handle : undefined,
+        cidr,
+        org,
+      };
+    } catch {
+      return null;
+    }
+  })();
+
+  const [ptr, rdapNetwork] = await Promise.all([ptrPromise, rdapPromise]);
+  const combinedLabel = [rdapNetwork?.org, rdapNetwork?.name, ptr].filter(Boolean).join(' ');
+  const providerName =
+    detectPlatformFromText(combinedLabel) ||
+    rdapNetwork?.org ||
+    rdapNetwork?.name ||
+    undefined;
+
+  return { ptr, rdapNetwork, providerName };
+}
+
+function detectTxtRecordProvider(value: string, host: string): string | undefined {
+  const lowVal = value.toLowerCase();
+  const lowHost = host.toLowerCase();
+  if (lowVal.includes('vc-domain-verify') || lowHost.includes('_vercel')) return 'Vercel Domain Verification';
+  if (lowVal.includes('google-site-verification')) return 'Google Workspace / Search';
+  if (lowVal.includes('cloudflare-verify')) return 'Cloudflare Verification';
+  if (lowVal.startsWith('ms=')) return 'Microsoft 365 Verification';
+  if (lowVal.includes('v=spf1')) return 'SPF Email Policy';
+  if (lowHost.includes('_dmarc') || lowVal.includes('v=dmarc1')) return 'DMARC Email Security';
+  if (lowVal.includes('apple-domain-verification')) return 'Apple Domain Verification';
+  if (lowVal.includes('facebook-domain-verification')) return 'Meta Domain Verification';
+  if (lowVal.includes('netlify')) return 'Netlify Verification';
+  return undefined;
+}
+
 app.post('/api/dns/verify-record', async (req, res) => {
   const { domain, type, host, value } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
@@ -747,43 +1036,127 @@ app.post('/api/dns/verify-record', async (req, res) => {
         : `${cleanHost}.${cleanDomain}`;
 
   try {
-    const dohCheck = async (qName: string, qType: string) => {
+    const googleDoh = async (qName: string, qType: string) => {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3500);
       const r = await fetch(
-        `https://dns.google/resolve?name=${encodeURIComponent(qName)}&type=${encodeURIComponent(qType)}`
+        `https://dns.google/resolve?name=${encodeURIComponent(qName)}&type=${encodeURIComponent(qType)}`,
+        { signal: ctl.signal }
       );
+      clearTimeout(t);
       return (await r.json()) as { Status: number; Answer?: { type: number; data: string }[] };
     };
 
-    const [fqdnRes, targetRes] = await Promise.all([
-      dohCheck(fqdn, cleanType),
-      cleanType === 'CNAME' || cleanType === 'MX'
-        ? dohCheck(cleanValue.replace(/\.+$/, ''), 'A')
+    const cloudflareDoh = async (qName: string, qType: string) => {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3500);
+      const r = await fetch(
+        `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(qName)}&type=${encodeURIComponent(qType)}`,
+        {
+          headers: { accept: 'application/dns-json' },
+          signal: ctl.signal,
+        }
+      );
+      clearTimeout(t);
+      return (await r.json()) as { Status: number; Answer?: { type: number; data: string }[] };
+    };
+
+    const targetHostCandidate = cleanValue
+      .replace(/^https?:\/\//i, '')
+      .replace(/\/.*$/, '')
+      .replace(/\.+$/, '')
+      .trim();
+
+    const isDirectIp = cleanType === 'A' || cleanType === 'AAAA';
+    const isHostTargetType = ['CNAME', 'MX', 'NS', 'PTR', 'DNAME', 'SRV', 'HTTPS', 'SVCB'].includes(cleanType);
+    const cleanedHostTarget = cleanType === 'SRV'
+      ? (targetHostCandidate.split(/\s+/).pop() || targetHostCandidate)
+      : targetHostCandidate;
+
+    const [
+      googleFqdnRes,
+      cfFqdnRes,
+      rootNsRes,
+      targetARes,
+      targetAAAARes,
+    ] = await Promise.all([
+      googleDoh(fqdn, cleanType).catch(() => ({ Status: 2, Answer: [] })),
+      cloudflareDoh(fqdn, cleanType).catch(() => ({ Status: 2, Answer: [] })),
+      googleDoh(cleanDomain, 'NS').catch(() => ({ Status: 2, Answer: [] })),
+      isHostTargetType && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(cleanedHostTarget)
+        ? googleDoh(cleanedHostTarget, 'A').catch(() => ({ Status: 2, Answer: [] }))
+        : Promise.resolve(null),
+      isHostTargetType && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(cleanedHostTarget)
+        ? cloudflareDoh(cleanedHostTarget, 'AAAA').catch(() => ({ Status: 2, Answer: [] }))
         : Promise.resolve(null),
     ]);
 
-    const liveAnswers = (fqdnRes.Answer || []).map((a) =>
-      String(a.data || '').replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase()
-    );
+    const combinedAnswers = [
+      ...(googleFqdnRes.Answer || []),
+      ...(cfFqdnRes.Answer || []),
+    ].map((a) => String(a.data || '').replace(/^"+|"+$/g, '').replace(/\.$/, '').trim());
+    const liveAnswers = Array.from(new Set(combinedAnswers.filter(Boolean)));
+
     const normalizedExpected = cleanValue.replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase();
     const livePropagated = liveAnswers.some(
-      (ans) => ans === normalizedExpected || ans.includes(normalizedExpected)
+      (ans) => ans.toLowerCase() === normalizedExpected || ans.toLowerCase().includes(normalizedExpected)
     );
 
-    const targetIps = (targetRes?.Answer || []).map((a) => String(a.data));
-    const targetReachable =
-      cleanType === 'A'
-        ? true
-        : cleanType === 'TXT'
-          ? true
-          : Boolean(targetRes && targetRes.Status === 0 && targetIps.length > 0);
+    const liveDomainNameservers = Array.from(
+      new Set(
+        (rootNsRes.Answer || [])
+          .filter((a) => a.type === 2)
+          .map((a) => String(a.data).replace(/\.$/, '').toLowerCase())
+      )
+    );
+
+    let targetIps: string[] = [];
+    if (isDirectIp) {
+      if (isPublicRoutableIp(cleanValue)) {
+        targetIps = [cleanValue];
+      }
+    } else if (isHostTargetType) {
+      targetIps = Array.from(
+        new Set([
+          ...(targetARes?.Answer || []).filter((a) => a.type === 1).map((a) => String(a.data)),
+          ...(targetAAAARes?.Answer || []).filter((a) => a.type === 28).map((a) => String(a.data)),
+        ])
+      );
+    }
+
+    const primaryPublicIp = targetIps.find((ip) => isPublicRoutableIp(ip));
+    const internetInfo = primaryPublicIp
+      ? await lookupIpRealInternetInfo(primaryPublicIp)
+      : { ptr: undefined, rdapNetwork: null, providerName: undefined };
+
+    let resolvedProvider = internetInfo.providerName;
+    if (!resolvedProvider && isHostTargetType) {
+      resolvedProvider = detectPlatformFromText(cleanedHostTarget);
+    }
+    if (!resolvedProvider && (cleanType === 'TXT' || cleanType === 'SPF')) {
+      resolvedProvider = detectTxtRecordProvider(cleanValue, cleanHost);
+    }
+
+    const targetReachable = isDirectIp
+      ? Boolean(primaryPublicIp && (internetInfo.rdapNetwork || internetInfo.ptr))
+      : cleanType === 'TXT' || cleanType === 'SPF'
+        ? Boolean(resolvedProvider || cleanValue.length >= 4)
+        : isHostTargetType
+          ? targetIps.length > 0 || Boolean(targetARes && targetARes.Status === 0)
+          : true;
 
     res.json({
       fqdn,
       type: cleanType,
       livePropagated,
       targetReachable,
-      targetIps: targetIps.slice(0, 3),
+      targetIps: targetIps.slice(0, 4),
+      resolvedProvider,
+      reversePtr: internetInfo.ptr,
+      rdapNetwork: internetInfo.rdapNetwork,
       liveAnswers,
+      liveDomainNameservers,
+      resolversChecked: ['Google 8.8.8.8', 'Cloudflare 1.1.1.1', 'ARIN RDAP Registry'],
       checkedAt: new Date().toISOString(),
     });
   } catch (err: any) {

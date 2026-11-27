@@ -43,8 +43,9 @@ export const SearchView: React.FC<SearchViewProps> = ({
   }, []);
 
   useEffect(() => {
-    const clean = appName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
-    if (clean.length < 2) {
+    const clean = appName.trim().toLowerCase().replace(/[^a-z0-9.-]/g, '');
+    const basePart = clean.split('.')[0] || '';
+    if (basePart.length < 2) {
       setResults([]);
       setSelectedPreview(null);
       setError('');
@@ -156,14 +157,15 @@ export const SearchView: React.FC<SearchViewProps> = ({
   };
 
   const handleLoadMore = () => {
-    const clean = appName.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
-    if (clean.length >= 2 && hasMore && !loadingMore) {
+    const clean = appName.trim().toLowerCase().replace(/[^a-z0-9.-]/g, '');
+    const basePart = clean.split('.')[0] || '';
+    if (basePart.length >= 2 && hasMore && !loadingMore) {
       runSearch(clean, mode, page + 1, nextCursor, tldFilter, true);
     }
   };
 
   const visibleCountLabel =
-    globalTotal > 0 ? `${globalTotal.toLocaleString()}+` : '9,000+';
+    globalTotal > 0 ? `${globalTotal.toLocaleString()}+ & .com` : '9,000+ & .com';
   const freeCountLabel =
     freeTotal > 0 ? `${freeTotal.toLocaleString()}+` : '2,500+';
 
@@ -186,8 +188,8 @@ export const SearchView: React.FC<SearchViewProps> = ({
         <div>
           <h1 className="text-2xl font-extrabold text-slate-900">Find Your Domain Name</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Type your app or brand name below to pull live available domains across{' '}
-            {freeCountLabel} open registries and {visibleCountLabel} global extensions.
+            Type your app name (or exact domain like <strong>mybrand.com</strong>) to check endless live-verified domains across{' '}
+            {freeCountLabel} open registries and {globalTotal > 0 ? globalTotal.toLocaleString() : '9,000+'} global extensions.
           </p>
         </div>
 
@@ -198,7 +200,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
               type="text"
               value={appName}
               onChange={(e) => setAppName(e.target.value)}
-              placeholder="Enter your app or business name (e.g. veribox, shopflow)..."
+              placeholder="Enter app name or domain (e.g. veribox, shopflow.com)..."
               className="w-full bg-slate-50 border border-slate-300 focus:border-blue-600 focus:bg-white rounded-xl pl-10 pr-10 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
             />
             {loading && <Loader2 className="w-4 h-4 text-blue-600 animate-spin absolute right-3.5 top-3.5" />}
@@ -210,7 +212,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
               type="text"
               value={tldFilter}
               onChange={(e) => setTldFilter(e.target.value)}
-              placeholder="Filter extension (.dev)"
+              placeholder="Filter extension (.com, .dev)"
               className="w-full bg-slate-50 border border-slate-300 focus:border-blue-600 focus:bg-white rounded-xl pl-9 pr-3 py-3 text-xs text-slate-900 focus:outline-none"
             />
           </div>
@@ -240,7 +242,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
 
           {results.length > 0 && (
             <span className="text-xs text-slate-500 tabular-nums">
-              {results.length} ready to claim · {totalExtensions.toLocaleString()} live extensions
+              {results.length} live ready · Endless real-time catalog active
             </span>
           )}
         </div>
@@ -375,7 +377,9 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 <span>
                   {loadingMore
                     ? 'Pulling more available domains...'
-                    : `Load More Available Domains (${(totalExtensions - nextCursor).toLocaleString()} left to scan)`}
+                    : totalExtensions > nextCursor
+                      ? `Load More Available Domains (${(totalExtensions - nextCursor).toLocaleString()}+ left)`
+                      : 'Load More Endless Live Variations'}
                 </span>
               </button>
             </div>

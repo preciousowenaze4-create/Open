@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { getSupabaseClient, mapDnsRecordRow } from '../supabase';
 import { fetchJson, getDnsRecordTypesRealTime, verifyDnsRecordRealTime } from '../utils/api';
 import { parseRawDnsText, ParsedDnsInput, validateDnsRecordInput } from '../utils/dnsParser';
-import { DnsRecordItem, DnsRecordType, DnsRecordTypeOption, DomainRecord } from '../types';
+import { DnsRecordItem, DnsRecordType, DnsRecordTypeOption, DnsRecordVerificationResult, DomainRecord } from '../types';
 import {
   Plus,
   Trash2,
@@ -17,6 +17,7 @@ import {
   FileCode2,
   ChevronDown,
   Search,
+  Globe,
 } from 'lucide-react';
 
 interface DnsRecordsEditorProps {
@@ -97,6 +98,8 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [checkingAll, setCheckingAll] = useState(false);
+  const [liveChecks, setLiveChecks] = useState<Record<string, DnsRecordVerificationResult>>({});
 
   const hasCloudflareToken = Boolean(domain.cloudflareZoneId && sessionToken?.trim());
 
@@ -262,6 +265,13 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
     let cloudflareRecordId = input.editRecord?.cloudflareRecordId;
     let syncStatus: DnsRecordItem['syncStatus'] = 'saved';
 
+    const verifyPromise = verifyDnsRecordRealTime({
+      domain: domain.domain,
+      type: norm.type,
+      host: norm.host,
+      value: norm.value,
+    }).catch(() => null);
+
     if (hasCloudflareToken && domain.cloudflareZoneId && sessionToken) {
       if (cloudflareRecordId) {
         const cfRes = await fetchJson('/api/cloudflare/dns/update', {
@@ -297,19 +307,14 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         cloudflareRecordId = cfRes?.record?.id;
         syncStatus = 'cloudflare_synced';
       }
-    } else {
-      const verify = await verifyDnsRecordRealTime({
-        domain: domain.domain,
-        type: norm.type,
-        host: norm.host,
-        value: norm.value,
-      }).catch(() => null);
-
-      if (verify?.livePropagated) {
-        syncStatus = 'propagated';
-      }
     }
 
+    const verifyResult = await verifyPromise;
+    if (syncStatus === 'saved' && verifyResult?.livePropagated) {
+      syncStatus = 'propagated';
+    }
+
+    let savedRecord: DnsRecordItem;
     if (input.editRecord) {
       const { data: updatedRow, error: updErr } = await supabase
         .from('dns_records')
@@ -327,9 +332,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         .single();
 
       if (updErr) throw updErr;
-      const mapped = mapDnsRecordRow(updatedRow);
-      setRecords((prev) => prev.map((r) => (r.id === mapped.id ? mapped : r)));
-      return mapped;
+      savedRecord = mapDnsRecordRow(updatedRow);
     } else {
       const recordId = `dns_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
       const { data: insertedRow, error: insErr } = await supabase
@@ -352,10 +355,38 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         .single();
 
       if (insErr) throw insErr;
-      const mapped = mapDnsRecordRow(insertedRow);
-      setRecords((prev) => [mapped, ...prev.filter((r) => r.id !== mapped.id)]);
-      return mapped;
+      savedRecord = mapDnsRecordRow(insertedRow);
     }
+
+    if (verifyResult) {
+      setLiveChecks((prev) => ({ ...prev, [savedRecord.id]: verifyResult }));
+      savedRecord = {
+        ...savedRecord,
+        resolvedProvider: verifyResult.resolvedProvider,
+        resolvedIps: verifyResult.targetIps,
+        reversePtr: verifyResult.reversePtr,
+        lastVerifiedAt: verifyResult.checkedAt,
+      };
+
+      // Best-effort metadata persistence if user has run the latest Supabase upgrade SQL
+      void supabase
+        .from('dns_records')
+        .update({
+          resolved_provider: verifyResult.resolvedProvider ?? null,
+          resolved_ips: verifyResult.targetIps ?? [],
+          reverse_ptr: verifyResult.reversePtr ?? null,
+          last_verified_at: verifyResult.checkedAt,
+        })
+        .eq('id', savedRecord.id);
+    }
+
+    if (input.editRecord) {
+      setRecords((prev) => prev.map((r) => (r.id === savedRecord.id ? savedRecord : r)));
+    } else {
+      setRecords((prev) => [savedRecord, ...prev.filter((r) => r.id !== savedRecord.id)]);
+    }
+
+    return savedRecord;
   };
 
   const handleSubmitRecord = async (e: React.FormEvent) => {
@@ -382,9 +413,9 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
       setNotice(
         `${saved.type} record (${saved.host} -> ${saved.value}) ${
           editTarget ? 'updated' : 'saved'
-        } in real time. You can add another record anytime.`
+        }${saved.resolvedProvider ? ` · Verified target: ${saved.resolvedProvider}` : ''}.`
       );
-      setTimeout(() => setNotice(''), 5000);
+      setTimeout(() => setNotice(''), 6000);
     } catch (err: any) {
       setError(err?.message || 'Could not save DNS record.');
     } finally {
@@ -467,9 +498,9 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
     }
   };
 
-  const handleVerifyLive = async (rec: DnsRecordItem) => {
+  const handleVerifyLive = async (rec: DnsRecordItem, silent = false) => {
     setCheckingId(rec.id);
-    setError('');
+    if (!silent) setError('');
     try {
       const res = await verifyDnsRecordRealTime({
         domain: domain.domain,
@@ -478,37 +509,80 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         value: rec.value,
       });
 
+      setLiveChecks((prev) => ({ ...prev, [rec.id]: res }));
+
       const nextStatus: DnsRecordItem['syncStatus'] = res.livePropagated
         ? 'propagated'
         : rec.cloudflareRecordId
           ? 'cloudflare_synced'
           : 'saved';
 
-      if (nextStatus !== rec.syncStatus) {
-        const supabase = getSupabaseClient();
-        if (supabase) {
+      const supabase = getSupabaseClient();
+      if (supabase) {
+        if (nextStatus !== rec.syncStatus) {
           await supabase
             .from('dns_records')
             .update({ sync_status: nextStatus })
             .eq('id', rec.id);
-          setRecords((prev) =>
-            prev.map((r) => (r.id === rec.id ? { ...r, syncStatus: nextStatus } : r))
-          );
         }
+        void supabase
+          .from('dns_records')
+          .update({
+            resolved_provider: res.resolvedProvider ?? null,
+            resolved_ips: res.targetIps ?? [],
+            reverse_ptr: res.reversePtr ?? null,
+            last_verified_at: res.checkedAt,
+          })
+          .eq('id', rec.id);
+
+        setRecords((prev) =>
+          prev.map((r) =>
+            r.id === rec.id
+              ? {
+                  ...r,
+                  syncStatus: nextStatus,
+                  resolvedProvider: res.resolvedProvider,
+                  resolvedIps: res.targetIps,
+                  reversePtr: res.reversePtr,
+                  lastVerifiedAt: res.checkedAt,
+                }
+              : r
+          )
+        );
       }
 
-      setNotice(
-        res.livePropagated
-          ? `Live on global DNS: ${res.fqdn} (${rec.type}) resolves to ${rec.value}.`
-          : res.targetReachable
-            ? `Saved cleanly. Target ${rec.value} is reachable; public propagation for ${res.fqdn} is pending.`
-            : `Saved for ${res.fqdn}. Waiting for DNS propagation.`
-      );
-      setTimeout(() => setNotice(''), 5500);
+      if (!silent) {
+        const providerPart = res.resolvedProvider ? ` (${res.resolvedProvider})` : '';
+        const ipPart = res.targetIps.length > 0 ? ` → ${res.targetIps.join(', ')}` : '';
+        setNotice(
+          res.livePropagated
+            ? `Live on global DNS (8.8.8.8 & 1.1.1.1): ${res.fqdn} (${rec.type})${providerPart}${ipPart}.`
+            : res.targetReachable
+              ? `Internet Target Verified${providerPart}${ipPart}. Public DNS propagation on ${res.fqdn} is pending.`
+              : `Saved for ${res.fqdn}. Target address did not respond on public registries — double check the value.`
+        );
+        setTimeout(() => setNotice(''), 6500);
+      }
     } catch (err: any) {
-      setError(err?.message || 'Live verification check failed.');
+      if (!silent) setError(err?.message || 'Live verification check failed.');
     } finally {
       setCheckingId(null);
+    }
+  };
+
+  const handleCheckAllLive = async () => {
+    if (records.length === 0 || checkingAll) return;
+    setCheckingAll(true);
+    setError('');
+    setNotice('');
+    try {
+      for (const rec of records) {
+        await handleVerifyLive(rec, true);
+      }
+      setNotice(`Cross-checked ${records.length} DNS record${records.length > 1 ? 's' : ''} against Google 8.8.8.8, Cloudflare 1.1.1.1, and ARIN RDAP.`);
+      setTimeout(() => setNotice(''), 6000);
+    } finally {
+      setCheckingAll(false);
     }
   };
 
@@ -548,14 +622,27 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setShowPasteBox((v) => !v)}
-          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
-        >
-          <ClipboardPaste className="w-3.5 h-3.5 text-blue-600" />
-          <span>{showPasteBox ? 'Hide Paste Box' : 'Paste Raw DNS Text'}</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {records.length > 0 && (
+            <button
+              type="button"
+              onClick={handleCheckAllLive}
+              disabled={checkingAll}
+              className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Globe className={`w-3.5 h-3.5 ${checkingAll ? 'animate-spin' : ''}`} />
+              <span>{checkingAll ? 'Checking Internet...' : 'Track All Live DNS'}</span>
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowPasteBox((v) => !v)}
+            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+          >
+            <ClipboardPaste className="w-3.5 h-3.5 text-blue-600" />
+            <span>{showPasteBox ? 'Hide Paste Box' : 'Paste Raw DNS Text'}</span>
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -590,7 +677,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             value={rawPasteText}
             onChange={(e) => handleParsePaste(e.target.value)}
             placeholder={
-              'Examples:\nA  @  76.76.21.21\nAAAA  @  2606:4700:4700::1111\nCNAME  www  cname.vercel-dns.com\nType: TXT  Name: _vercel  Value: vc-domain-verify=...'
+              'Examples:\nA  @  216.198.79.1\nCNAME  www  cname.vercel-dns.com\nTXT  _vercel  vc-domain-verify=...'
             }
             className="w-full bg-white border border-slate-300 focus:border-blue-600 rounded-xl p-3 text-xs text-slate-900 font-mono focus:outline-none"
           />
@@ -754,7 +841,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             </label>
           ) : (
             <span className="text-[11px] text-slate-500">
-              Tip: Use <strong>@</strong> for root domain or tap Type above to search all {availableTypes.length}+ IANA record types
+              Tip: Use <strong>@</strong> for root domain or paste from Vercel / Cloudflare / Render
             </span>
           )}
 
@@ -796,84 +883,111 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         </div>
       ) : (
         <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-200">
-          {records.map((rec) => (
-            <div
-              key={rec.id}
-              className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 hover:bg-slate-50/70"
-            >
-              <div className="min-w-0 space-y-1">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-[11px] font-bold">
-                    {rec.type}
-                  </span>
-                  <span className="text-xs font-bold text-slate-900">{rec.host}</span>
-                  {typeof rec.priority === 'number' && (
-                    <span className="text-[11px] text-slate-500">Priority {rec.priority}</span>
+          {records.map((rec) => {
+            const liveMeta = liveChecks[rec.id];
+            const detectedProvider = liveMeta?.resolvedProvider || rec.resolvedProvider;
+            const resolvedIps = (liveMeta?.targetIps && liveMeta.targetIps.length > 0 ? liveMeta.targetIps : rec.resolvedIps) || [];
+            const ptr = liveMeta?.reversePtr || rec.reversePtr;
+
+            return (
+              <div
+                key={rec.id}
+                className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 hover:bg-slate-50/70"
+              >
+                <div className="min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="px-2 py-0.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-md text-[11px] font-bold">
+                      {rec.type}
+                    </span>
+                    <span className="text-xs font-bold text-slate-900">{rec.host}</span>
+                    {typeof rec.priority === 'number' && (
+                      <span className="text-[11px] text-slate-500">Priority {rec.priority}</span>
+                    )}
+                    <span
+                      className={`text-[11px] font-semibold ${
+                        rec.syncStatus === 'propagated' || rec.syncStatus === 'cloudflare_synced'
+                          ? 'text-emerald-700'
+                          : detectedProvider
+                            ? 'text-blue-700'
+                            : 'text-slate-500'
+                      }`}
+                    >
+                      {rec.syncStatus === 'propagated'
+                        ? 'Live on Global DNS'
+                        : rec.syncStatus === 'cloudflare_synced'
+                          ? 'Cloudflare Synced'
+                          : detectedProvider
+                            ? 'Internet Target Verified'
+                            : 'Saved'}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 text-xs text-slate-600 font-mono break-all">
+                    <span>{rec.value}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleCopyValue(rec)}
+                      className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer shrink-0"
+                      title="Copy value"
+                    >
+                      {copiedId === rec.id ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  </div>
+
+                  {(detectedProvider || resolvedIps.length > 0 || ptr) && (
+                    <div className="text-[11px] text-slate-600 flex flex-wrap items-center gap-x-3 gap-y-0.5 pt-0.5">
+                      {detectedProvider && (
+                        <span className="font-semibold text-emerald-700">
+                          Network: {detectedProvider}
+                        </span>
+                      )}
+                      {resolvedIps.length > 0 && (
+                        <span className="font-mono text-slate-500">
+                          IP: {resolvedIps.slice(0, 2).join(', ')}
+                        </span>
+                      )}
+                      {ptr && <span className="text-slate-500">PTR: {ptr}</span>}
+                    </div>
                   )}
-                  <span
-                    className={`text-[11px] font-semibold ${
-                      rec.syncStatus === 'propagated' || rec.syncStatus === 'cloudflare_synced'
-                        ? 'text-emerald-700'
-                        : 'text-slate-500'
-                    }`}
-                  >
-                    {rec.syncStatus === 'propagated'
-                      ? 'Live DNS Propagated'
-                      : rec.syncStatus === 'cloudflare_synced'
-                        ? 'Cloudflare Synced'
-                        : 'Saved'}
-                  </span>
                 </div>
 
-                <div className="flex items-center gap-1.5 text-xs text-slate-600 font-mono break-all">
-                  <span>{rec.value}</span>
+                <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
-                    onClick={() => handleCopyValue(rec)}
-                    className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer shrink-0"
-                    title="Copy value"
+                    onClick={() => handleVerifyLive(rec)}
+                    disabled={checkingId === rec.id}
+                    className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 cursor-pointer"
+                    title="Check real-time internet DNS & RDAP"
                   >
-                    {copiedId === rec.id ? (
-                      <Check className="w-3.5 h-3.5 text-emerald-600" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
+                    <RefreshCw className={`w-3 h-3 ${checkingId === rec.id ? 'animate-spin text-blue-600' : ''}`} />
+                    <span>Check</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleStartEdit(rec)}
+                    className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 cursor-pointer"
+                    title="Edit record"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteRecord(rec)}
+                    className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 cursor-pointer"
+                    title="Delete record"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    <span>Delete</span>
                   </button>
                 </div>
               </div>
-
-              <div className="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => handleVerifyLive(rec)}
-                  disabled={checkingId === rec.id}
-                  className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 cursor-pointer"
-                  title="Check live DNS propagation"
-                >
-                  <RefreshCw className={`w-3 h-3 ${checkingId === rec.id ? 'animate-spin text-blue-600' : ''}`} />
-                  <span>Check</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleStartEdit(rec)}
-                  className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 cursor-pointer"
-                  title="Edit record"
-                >
-                  <Edit3 className="w-3 h-3" />
-                  <span>Edit</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteRecord(rec)}
-                  className="px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-[11px] font-semibold rounded-lg inline-flex items-center gap-1 cursor-pointer"
-                  title="Delete record"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  <span>Delete</span>
-                </button>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>

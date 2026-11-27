@@ -457,6 +457,7 @@ function PortalAppContent() {
             onNavigate={handleSelectSection}
             onBuildSite={handleBuildSiteQuick}
             onDomainUpdated={handleDomainUpdated}
+            sessionToken={activeDomainObj ? sessionTokensByDomain[activeDomainObj.id] : undefined}
           />
         )}
 
@@ -505,6 +506,7 @@ function PortalAppContent() {
             }}
             onSelectDomainAction={handleSelectDomainAction}
             onNavigate={handleSelectSection}
+            sessionTokensByDomain={sessionTokensByDomain}
           />
         )}
 

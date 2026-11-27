@@ -231,7 +231,59 @@ $$;
 
 grant execute on function public.filter_claimed_domains(text[]) to anon, authenticated;
 
--- Enable Realtime updates for all 4 tables (safe if re-run)
+-- 5. Domain DNS Records (Zone Editor: A, CNAME, TXT, MX)
+create table if not exists public.dns_records (
+  id text primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
+  domain_id text not null references public.domains(id) on delete cascade,
+  domain text not null check (char_length(domain) between 3 and 253),
+  record_type text not null check (record_type in ('A', 'CNAME', 'TXT', 'MX')),
+  host text not null check (char_length(host) between 1 and 253),
+  value text not null check (char_length(value) between 1 and 1024),
+  ttl integer not null default 300 check (ttl >= 1 and ttl <= 86400),
+  priority integer check (priority is null or (priority >= 0 and priority <= 65535)),
+  proxied boolean not null default false,
+  cloudflare_record_id text,
+  sync_status text not null default 'saved' check (sync_status in ('saved', 'propagated', 'cloudflare_synced')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_dns_records_user_domain on public.dns_records(user_id, domain_id);
+
+drop trigger if exists trg_dns_records_updated_at on public.dns_records;
+create trigger trg_dns_records_updated_at
+  before update on public.dns_records
+  for each row execute function public.set_updated_at();
+
+alter table public.dns_records enable row level security;
+
+drop policy if exists "dns_records_select_own" on public.dns_records;
+create policy "dns_records_select_own"
+  on public.dns_records for select
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
+drop policy if exists "dns_records_insert_own" on public.dns_records;
+create policy "dns_records_insert_own"
+  on public.dns_records for insert
+  to authenticated
+  with check ((select auth.uid()) = user_id);
+
+drop policy if exists "dns_records_update_own" on public.dns_records;
+create policy "dns_records_update_own"
+  on public.dns_records for update
+  to authenticated
+  using ((select auth.uid()) = user_id)
+  with check ((select auth.uid()) = user_id);
+
+drop policy if exists "dns_records_delete_own" on public.dns_records;
+create policy "dns_records_delete_own"
+  on public.dns_records for delete
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
+-- Enable Realtime updates for all 5 tables (safe if re-run)
 do $$
 begin
   alter publication supabase_realtime add table public.profiles;
@@ -253,5 +305,11 @@ end $$;
 do $$
 begin
   alter publication supabase_realtime add table public.tickets;
+exception when duplicate_object then null;
+end $$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.dns_records;
 exception when duplicate_object then null;
 end $$;

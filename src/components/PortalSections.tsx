@@ -9,6 +9,7 @@ import {
   SupportTicket,
   UserProfile,
 } from '../types';
+import { DnsRecordsEditor } from './DnsRecordsEditor';
 import {
   RefreshCw,
   Cloud,
@@ -28,7 +29,8 @@ export const ManageDnsView: React.FC<{
   onOpenCloudflare: (domain: DomainRecord) => void;
   onSelectDomainAction: (domain: DomainRecord, section: PortalSection) => void;
   onNavigate: (sec: PortalSection) => void;
-}> = ({ domains, onOpenCloudflare, onSelectDomainAction, onNavigate }) => {
+  sessionTokensByDomain?: Record<string, string>;
+}> = ({ domains, onOpenCloudflare, onSelectDomainAction, onNavigate, sessionTokensByDomain }) => {
   const [selectedDomain, setSelectedDomain] = useState(domains[0]?.domain || '');
   const [liveDns, setLiveDns] = useState<LiveDnsLookupResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -157,6 +159,13 @@ export const ManageDnsView: React.FC<{
           </div>
         )}
       </div>
+
+      {matched && (
+        <DnsRecordsEditor
+          domain={matched}
+          sessionToken={sessionTokensByDomain?.[matched.id]}
+        />
+      )}
     </div>
   );
 };

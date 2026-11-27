@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { getSupabaseClient, mapDomainRow } from '../supabase';
 import { verifyNameserversRealTime } from '../utils/api';
 import { DomainRecord, NameserverVerificationResult, PortalSection } from '../types';
+import { DnsRecordsEditor } from './DnsRecordsEditor';
 import {
   Cloud,
   CheckCircle2,
@@ -436,6 +437,8 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
               </button>
             </div>
           </form>
+
+          <DnsRecordsEditor domain={activeDomain} sessionToken={sessionToken} compact />
         </div>
       )}
     </div>
@@ -453,6 +456,7 @@ interface ManageDomainViewProps {
   onNavigate: (sec: PortalSection) => void;
   onBuildSite: (domain: DomainRecord) => void;
   onDomainUpdated: (domain: DomainRecord) => void;
+  sessionToken?: string;
 }
 
 export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
@@ -463,6 +467,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
   onNavigate,
   onBuildSite,
   onDomainUpdated,
+  sessionToken,
 }) => {
   const [copied, setCopied] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -714,6 +719,8 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
               </div>
             </div>
           </div>
+
+          <DnsRecordsEditor domain={activeDomain} sessionToken={sessionToken} />
         </div>
       )}
     </div>

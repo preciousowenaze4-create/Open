@@ -497,3 +497,69 @@ export async function verifyNameserversRealTime(payload: {
     };
   }
 }
+
+export async function verifyDnsRecordRealTime(payload: {
+  domain: string;
+  type: 'A' | 'CNAME' | 'TXT' | 'MX';
+  host: string;
+  value: string;
+}): Promise<{
+  fqdn: string;
+  type: string;
+  livePropagated: boolean;
+  targetReachable: boolean;
+  targetIps: string[];
+  liveAnswers: string[];
+  checkedAt: string;
+}> {
+  try {
+    return await fetchJson('/api/dns/verify-record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    const cleanDomain = payload.domain.toLowerCase().trim();
+    const cleanHost = payload.host.toLowerCase().trim();
+    const fqdn =
+      cleanHost === '@' || cleanHost === cleanDomain
+        ? cleanDomain
+        : cleanHost.endsWith(`.${cleanDomain}`)
+          ? cleanHost
+          : `${cleanHost}.${cleanDomain}`;
+
+    const [fqdnRes, targetRes] = await Promise.all([
+      fetch(`https://dns.google/resolve?name=${encodeURIComponent(fqdn)}&type=${encodeURIComponent(payload.type)}`)
+        .then((r) => r.json())
+        .catch(() => ({ Status: 2, Answer: [] })),
+      payload.type === 'CNAME' || payload.type === 'MX'
+        ? fetch(`https://dns.google/resolve?name=${encodeURIComponent(payload.value.replace(/\.+$/, ''))}&type=A`)
+            .then((r) => r.json())
+            .catch(() => ({ Status: 2, Answer: [] }))
+        : Promise.resolve(null),
+    ]);
+
+    const liveAnswers = (fqdnRes.Answer || []).map((a: any) =>
+      String(a.data || '').replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase()
+    );
+    const normalizedExpected = payload.value.replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase();
+    const livePropagated = liveAnswers.some(
+      (ans: string) => ans === normalizedExpected || ans.includes(normalizedExpected)
+    );
+    const targetIps = (targetRes?.Answer || []).map((a: any) => String(a.data));
+
+    return {
+      fqdn,
+      type: payload.type,
+      livePropagated,
+      targetReachable:
+        payload.type === 'A' || payload.type === 'TXT'
+          ? true
+          : Boolean(targetRes && targetRes.Status === 0 && targetIps.length > 0),
+      targetIps: targetIps.slice(0, 3),
+      liveAnswers,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+}
+

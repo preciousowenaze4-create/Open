@@ -70,6 +70,25 @@ export interface DomainSearchResult {
   lookupSource: string;
 }
 
+export type DnsRecordType = 'A' | 'CNAME' | 'TXT' | 'MX';
+
+export interface DnsRecordItem {
+  id: string;
+  userId: string;
+  domainId: string;
+  domain: string;
+  type: DnsRecordType;
+  host: string;
+  value: string;
+  ttl: number;
+  priority?: number;
+  proxied?: boolean;
+  cloudflareRecordId?: string;
+  syncStatus: 'saved' | 'propagated' | 'cloudflare_synced';
+  createdAt?: unknown;
+  updatedAt?: unknown;
+}
+
 export interface CloudflareDnsRecord {
   id: string;
   type: string;

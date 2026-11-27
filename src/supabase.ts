@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { DomainRecord, ShopOrder, SupportTicket, UserProfile } from './types';
+import { DnsRecordItem, DomainRecord, ShopOrder, SupportTicket, UserProfile } from './types';
 
 declare const __SUPABASE_URL__: string | undefined;
 declare const __SUPABASE_ANON_KEY__: string | undefined;
@@ -146,6 +146,25 @@ export function mapTicketRow(row: any): SupportTicket {
     department: row.department,
     message: row.message,
     status: row.status || 'open',
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function mapDnsRecordRow(row: any): DnsRecordItem {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    domainId: row.domain_id,
+    domain: row.domain,
+    type: row.record_type || 'A',
+    host: row.host || '@',
+    value: row.value || '',
+    ttl: typeof row.ttl === 'number' ? row.ttl : 300,
+    priority: typeof row.priority === 'number' ? row.priority : undefined,
+    proxied: Boolean(row.proxied),
+    cloudflareRecordId: row.cloudflare_record_id || undefined,
+    syncStatus: row.sync_status || 'saved',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

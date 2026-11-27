@@ -521,24 +521,29 @@ app.post('/api/cloudflare/dns/list', async (req, res) => {
 });
 
 app.post('/api/cloudflare/dns/create', async (req, res) => {
-  const { zoneId, apiToken, type, name, content, proxied } = req.body || {};
+  const { zoneId, apiToken, type, name, content, proxied, priority, ttl } = req.body || {};
   if (!zoneId || !apiToken || !type || !name || !content) {
     return res.status(400).json({ error: 'Zone ID, API Token, record type, name, and content are required.' });
   }
 
   try {
+    const payload: Record<string, any> = {
+      type,
+      name,
+      content,
+      ttl: typeof ttl === 'number' && ttl >= 1 ? ttl : 1,
+      proxied: type === 'A' || type === 'CNAME' ? Boolean(proxied) : false,
+    };
+    if (type === 'MX') {
+      payload.priority = typeof priority === 'number' ? priority : 10;
+    }
+
     const created = await cloudflareFetch(
       `/zones/${encodeURIComponent(zoneId)}/dns_records`,
       apiToken,
       {
         method: 'POST',
-        body: JSON.stringify({
-          type,
-          name,
-          content,
-          ttl: 1,
-          proxied: Boolean(proxied),
-        }),
+        body: JSON.stringify(payload),
       }
     );
 
@@ -549,11 +554,55 @@ app.post('/api/cloudflare/dns/create', async (req, res) => {
         name: created.name,
         content: created.content,
         ttl: created.ttl,
+        priority: created.priority,
         proxied: created.proxied,
       },
     });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to create Cloudflare DNS record.' });
+  }
+});
+
+app.post('/api/cloudflare/dns/update', async (req, res) => {
+  const { zoneId, apiToken, recordId, type, name, content, proxied, priority, ttl } = req.body || {};
+  if (!zoneId || !apiToken || !recordId || !type || !name || !content) {
+    return res.status(400).json({ error: 'Zone ID, API Token, recordId, type, name, and content are required.' });
+  }
+
+  try {
+    const payload: Record<string, any> = {
+      type,
+      name,
+      content,
+      ttl: typeof ttl === 'number' && ttl >= 1 ? ttl : 1,
+      proxied: type === 'A' || type === 'CNAME' ? Boolean(proxied) : false,
+    };
+    if (type === 'MX') {
+      payload.priority = typeof priority === 'number' ? priority : 10;
+    }
+
+    const updated = await cloudflareFetch(
+      `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`,
+      apiToken,
+      {
+        method: 'PATCH',
+        body: JSON.stringify(payload),
+      }
+    );
+
+    res.json({
+      record: {
+        id: updated.id,
+        type: updated.type,
+        name: updated.name,
+        content: updated.content,
+        ttl: updated.ttl,
+        priority: updated.priority,
+        proxied: updated.proxied,
+      },
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to update Cloudflare DNS record.' });
   }
 });
 
@@ -572,6 +621,69 @@ app.post('/api/cloudflare/dns/delete', async (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to delete Cloudflare DNS record.' });
+  }
+});
+
+app.post('/api/dns/verify-record', async (req, res) => {
+  const { domain, type, host, value } = req.body || {};
+  const cleanDomain = String(domain || '').toLowerCase().trim();
+  const cleanType = String(type || 'A').toUpperCase().trim();
+  const cleanHost = String(host || '@').toLowerCase().trim();
+  const cleanValue = String(value || '').trim();
+
+  if (!cleanDomain || !cleanValue) {
+    return res.status(400).json({ error: 'Domain and record value are required.' });
+  }
+
+  const fqdn =
+    cleanHost === '@' || cleanHost === cleanDomain
+      ? cleanDomain
+      : cleanHost.endsWith(`.${cleanDomain}`)
+        ? cleanHost
+        : `${cleanHost}.${cleanDomain}`;
+
+  try {
+    const dohCheck = async (qName: string, qType: string) => {
+      const r = await fetch(
+        `https://dns.google/resolve?name=${encodeURIComponent(qName)}&type=${encodeURIComponent(qType)}`
+      );
+      return (await r.json()) as { Status: number; Answer?: { type: number; data: string }[] };
+    };
+
+    const [fqdnRes, targetRes] = await Promise.all([
+      dohCheck(fqdn, cleanType),
+      cleanType === 'CNAME' || cleanType === 'MX'
+        ? dohCheck(cleanValue.replace(/\.+$/, ''), 'A')
+        : Promise.resolve(null),
+    ]);
+
+    const liveAnswers = (fqdnRes.Answer || []).map((a) =>
+      String(a.data || '').replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase()
+    );
+    const normalizedExpected = cleanValue.replace(/^"+|"+$/g, '').replace(/\.$/, '').toLowerCase();
+    const livePropagated = liveAnswers.some(
+      (ans) => ans === normalizedExpected || ans.includes(normalizedExpected)
+    );
+
+    const targetIps = (targetRes?.Answer || []).map((a) => String(a.data));
+    const targetReachable =
+      cleanType === 'A'
+        ? true
+        : cleanType === 'TXT'
+          ? true
+          : Boolean(targetRes && targetRes.Status === 0 && targetIps.length > 0);
+
+    res.json({
+      fqdn,
+      type: cleanType,
+      livePropagated,
+      targetReachable,
+      targetIps: targetIps.slice(0, 3),
+      liveAnswers,
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(502).json({ error: err.message || 'Live record check failed.' });
   }
 });
 

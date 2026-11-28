@@ -11,6 +11,7 @@ import {
 } from '../types';
 import { DnsRecordsEditor } from './DnsRecordsEditor';
 import { DomainManageMenu } from './DomainManagementViews';
+import { DomainDiagnosticsPanel } from './DomainDiagnosticsPanel';
 import {
   RefreshCw,
   Cloud,
@@ -31,7 +32,21 @@ export const ManageDnsView: React.FC<{
   onSelectDomainAction: (domain: DomainRecord, section: PortalSection) => void;
   onNavigate: (sec: PortalSection) => void;
   sessionTokensByDomain?: Record<string, string>;
-}> = ({ domains, onOpenCloudflare, onSelectDomainAction, onNavigate, sessionTokensByDomain }) => {
+  desecToken?: string;
+  onSaveDesecToken?: (token: string) => void;
+  dynv6Token?: string;
+  onSaveDynv6Token?: (token: string) => void;
+}> = ({
+  domains,
+  onOpenCloudflare,
+  onSelectDomainAction,
+  onNavigate,
+  sessionTokensByDomain,
+  desecToken,
+  onSaveDesecToken,
+  dynv6Token,
+  onSaveDynv6Token,
+}) => {
   const [selectedDomain, setSelectedDomain] = useState(domains[0]?.domain || '');
   const [liveDns, setLiveDns] = useState<LiveDnsLookupResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -125,7 +140,7 @@ export const ManageDnsView: React.FC<{
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between text-xs text-slate-600">
               <span>
-                Domain: <strong className="text-blue-600">https://{liveDns.domain}</strong>
+                Domain: <strong className="text-blue-600">{liveDns.domain}</strong>
               </span>
               <span className="tabular-nums">
                 Checked {new Date(liveDns.checkedAt).toLocaleTimeString()}
@@ -166,7 +181,12 @@ export const ManageDnsView: React.FC<{
           <DnsRecordsEditor
             domain={matched}
             sessionToken={sessionTokensByDomain?.[matched.id]}
+            desecToken={desecToken}
+            onSaveDesecToken={onSaveDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={onSaveDynv6Token}
           />
+          <DomainDiagnosticsPanel domain={matched.domain} />
           <DomainManageMenu
             activeSection="manage_dns"
             activeDomain={matched}
@@ -247,9 +267,9 @@ export const RenewalsView: React.FC<{
                   href={d.siteUrl || `https://${d.domain}`}
                   target="_blank"
                   rel="noreferrer"
-                  className="font-semibold text-blue-600 underline underline-offset-2"
+                  className="font-bold text-blue-600 hover:underline underline-offset-2"
                 >
-                  https://{d.domain}
+                  {d.domain}
                 </a>
                 <div className="text-xs text-slate-500 mt-1">
                   Renewal Cost: <strong className="text-emerald-700">$0.00 / year</strong>
@@ -351,9 +371,9 @@ export const StoreOrdersView: React.FC<{
                     href={matchedDomain?.siteUrl || `https://${ord.domain}`}
                     target="_blank"
                     rel="noreferrer"
-                    className="font-semibold text-blue-600 underline underline-offset-2 text-base inline-flex items-center gap-1"
+                    className="font-bold text-blue-600 hover:underline underline-offset-2 text-base inline-flex items-center gap-1"
                   >
-                    <span>https://{ord.domain}</span>
+                    <span>{ord.domain}</span>
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
                   <div className="text-xs text-slate-500 mt-0.5">
@@ -619,7 +639,7 @@ export const BillingView: React.FC<{
       ) : (
         orders.map((o) => (
           <div key={o.id} className="p-4 flex items-center justify-between text-xs">
-            <span className="font-semibold text-blue-600">https://{o.domain}</span>
+            <span className="font-bold text-blue-600">{o.domain}</span>
             <span className="inline-flex items-center gap-1 text-emerald-700 font-semibold">
               <CheckCircle2 className="w-3.5 h-3.5" /> {o.amountLabel}
             </span>

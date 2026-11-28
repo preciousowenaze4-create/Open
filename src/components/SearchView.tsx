@@ -1,14 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { DomainSearchResult, PortalSection } from '../types';
-import { getTldStatsRealTime, searchDomainsRealTime } from '../utils/api';
+import { DomainSearchCategory, DomainSearchResult, PortalSection } from '../types';
+import {
+  getDomainCapabilitiesRealTime,
+  getTldStatsRealTime,
+  searchDomainsRealTime,
+  verifyDesecTokenRealTime,
+  verifyDynv6TokenRealTime,
+} from '../utils/api';
 import { getSupabaseClient } from '../supabase';
-import { Search, Globe, Check, ArrowRight, Loader2, Filter, ExternalLink } from 'lucide-react';
+import { Search, Globe, Check, ArrowRight, Loader2, Filter, ExternalLink, KeyRound, CheckCircle2, Zap } from 'lucide-react';
 
 interface SearchViewProps {
   onGetDomain: (result: DomainSearchResult) => Promise<void>;
   acquiringDomain: string | null;
   onNavigate: (sec: PortalSection) => void;
   ownedDomains?: string[];
+  desecToken?: string;
+  onSaveDesecToken?: (token: string) => void;
+  dynv6Token?: string;
+  onSaveDynv6Token?: (token: string) => void;
 }
 
 export const SearchView: React.FC<SearchViewProps> = ({
@@ -16,9 +26,13 @@ export const SearchView: React.FC<SearchViewProps> = ({
   acquiringDomain,
   onNavigate,
   ownedDomains = [],
+  desecToken = '',
+  onSaveDesecToken,
+  dynv6Token = '',
+  onSaveDynv6Token,
 }) => {
   const [appName, setAppName] = useState('');
-  const [mode, setMode] = useState<'free' | 'all'>('free');
+  const [domainType, setDomainType] = useState<DomainSearchCategory>('all_free');
   const [tldFilter, setTldFilter] = useState('');
   const [results, setResults] = useState<DomainSearchResult[]>([]);
   const [selectedPreview, setSelectedPreview] = useState<DomainSearchResult | null>(null);
@@ -31,7 +45,64 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
+  const [caps, setCaps] = useState<{ desecConfigured: boolean; dynv6Configured: boolean }>({
+    desecConfigured: false,
+    dynv6Configured: false,
+  });
+  const [keyProvider, setKeyProvider] = useState<'desec' | 'dynv6'>('desec');
+  const [tokenInput, setTokenInput] = useState(desecToken || dynv6Token);
+  const [editingKey, setEditingKey] = useState(false);
+  const [verifyingKey, setVerifyingKey] = useState(false);
+  const [keyStatusMsg, setKeyStatusMsg] = useState('');
+  const [keyErr, setKeyErr] = useState('');
   const abortRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    if (keyProvider === 'desec' && desecToken && !tokenInput) {
+      setTokenInput(desecToken);
+    } else if (keyProvider === 'dynv6' && dynv6Token && !tokenInput) {
+      setTokenInput(dynv6Token);
+    }
+  }, [desecToken, dynv6Token, keyProvider]);
+
+  const handleConnectProviderKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = tokenInput.trim();
+    if (!cleaned) return;
+    setVerifyingKey(true);
+    setKeyErr('');
+    setKeyStatusMsg('');
+    try {
+      if (keyProvider === 'desec') {
+        const res = await verifyDesecTokenRealTime(cleaned);
+        if (res.verified) {
+          onSaveDesecToken?.(cleaned);
+          setEditingKey(false);
+          setKeyStatusMsg(
+            `deSEC connected (${res.domainsCount} existing domain${res.domainsCount === 1 ? '' : 's'}). Claim any .dedyn.io domain below to register it live.`
+          );
+        }
+      } else {
+        const res = await verifyDynv6TokenRealTime(cleaned);
+        if (res.verified) {
+          onSaveDynv6Token?.(cleaned);
+          setEditingKey(false);
+          setKeyStatusMsg(
+            `Dynv6 connected (${res.zonesCount} existing zone${res.zonesCount === 1 ? '' : 's'}). Claim any .dynv6.net, .v6.rocks, or .dns.army domain below to register it live.`
+          );
+        }
+      }
+    } catch (err: any) {
+      setKeyErr(
+        err?.message ||
+          (keyProvider === 'desec'
+            ? 'Could not verify deSEC token. Check your DESEC_API_TOKEN.'
+            : 'Could not verify Dynv6 token. Copy your HTTP Token from dynv6.com/keys.')
+      );
+    } finally {
+      setVerifyingKey(false);
+    }
+  };
 
   useEffect(() => {
     getTldStatsRealTime()
@@ -40,7 +111,11 @@ export const SearchView: React.FC<SearchViewProps> = ({
         if (d.totalExtensions) setGlobalTotal(d.totalExtensions);
       })
       .catch(() => {});
+    getDomainCapabilitiesRealTime().then(setCaps).catch(() => {});
   }, []);
+
+  const effectiveMode: 'free' | 'all' =
+    domainType === 'all_free' || domainType === 'instant_live' ? 'free' : 'all';
 
   useEffect(() => {
     const clean = appName.trim().toLowerCase().replace(/[^a-z0-9.-]/g, '');
@@ -55,11 +130,11 @@ export const SearchView: React.FC<SearchViewProps> = ({
     }
 
     const timer = setTimeout(() => {
-      runSearch(clean, mode, 1, 0, tldFilter, false);
-    }, 350);
+      runSearch(clean, effectiveMode, domainType, 1, 0, tldFilter, false);
+    }, 280);
 
     return () => clearTimeout(timer);
-  }, [appName, mode, tldFilter]);
+  }, [appName, domainType, tldFilter]);
 
   const filterOutClaimedDomains = async (items: DomainSearchResult[]) => {
     const ownedSet = new Set(ownedDomains.map((d) => d.toLowerCase()));
@@ -89,6 +164,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const runSearch = async (
     query: string,
     searchMode: 'free' | 'all',
+    category: DomainSearchCategory,
     targetPage: number,
     cursor: number,
     filter: string,
@@ -103,38 +179,24 @@ export const SearchView: React.FC<SearchViewProps> = ({
     setError('');
 
     try {
-      let currentCursor = cursor;
-      let latestHasMore = false;
-      let latestTotalExtensions = 0;
-      let collected: DomainSearchResult[] = [];
-      let attempts = 0;
+      const data = await searchDomainsRealTime({
+        query,
+        mode: searchMode,
+        domainType: category,
+        page: targetPage,
+        cursor,
+        limit: 24,
+        tldFilter: filter,
+        signal: controller.signal,
+      });
 
-      // Keep scanning cleanly if an early page hits taken/claimed domains so user sees plenty of blue results
-      while (collected.length < 18 && attempts < 2) {
-        const data = await searchDomainsRealTime({
-          query,
-          mode: searchMode,
-          page: targetPage + attempts,
-          cursor: currentCursor,
-          limit: 24,
-          tldFilter: filter,
-          signal: controller.signal,
-        });
-
-        const cleanBatch = await filterOutClaimedDomains(data.results || []);
-        collected = [...collected, ...cleanBatch];
-        currentCursor = data.nextCursor ?? currentCursor + 24;
-        latestHasMore = Boolean(data.hasMore);
-        latestTotalExtensions = data.totalExtensions || latestTotalExtensions;
-        attempts += 1;
-
-        if (!latestHasMore || currentCursor >= latestTotalExtensions) break;
-      }
+      const cleanBatch = await filterOutClaimedDomains(data.results || []);
+      const nextIdx = data.nextCursor ?? cursor + 24;
 
       setResults((prev) => {
         const base = append ? prev : [];
         const seen = new Set(base.map((b) => b.domain.toLowerCase()));
-        const uniqueNew = collected.filter((c) => {
+        const uniqueNew = cleanBatch.filter((c) => {
           const key = c.domain.toLowerCase();
           if (seen.has(key)) return false;
           seen.add(key);
@@ -143,9 +205,9 @@ export const SearchView: React.FC<SearchViewProps> = ({
         return [...base, ...uniqueNew];
       });
       setPage(targetPage);
-      setNextCursor(currentCursor);
-      setHasMore(latestHasMore);
-      setTotalExtensions(latestTotalExtensions);
+      setNextCursor(nextIdx);
+      setHasMore(Boolean(data.hasMore));
+      setTotalExtensions(data.totalExtensions || 0);
     } catch (err: any) {
       if (err?.name !== 'AbortError') {
         setError(err?.message || 'Unable to check domain availability right now.');
@@ -160,14 +222,30 @@ export const SearchView: React.FC<SearchViewProps> = ({
     const clean = appName.trim().toLowerCase().replace(/[^a-z0-9.-]/g, '');
     const basePart = clean.split('.')[0] || '';
     if (basePart.length >= 2 && hasMore && !loadingMore) {
-      runSearch(clean, mode, page + 1, nextCursor, tldFilter, true);
+      runSearch(clean, effectiveMode, domainType, page + 1, nextCursor, tldFilter, true);
     }
   };
 
   const visibleCountLabel =
-    globalTotal > 0 ? `${globalTotal.toLocaleString()}+ & .com` : '9,000+ & .com';
+    globalTotal > 0 ? `${globalTotal.toLocaleString()}+` : '9,000+';
   const freeCountLabel =
     freeTotal > 0 ? `${freeTotal.toLocaleString()}+` : '2,500+';
+
+  const quickExtensions = [
+    '.dedyn.io',
+    '.dynv6.net',
+    '.v6.rocks',
+    '.dns.army',
+    '.us.kg',
+    '.dpdns.org',
+    '.com',
+    '.net',
+    '.org',
+    '.io',
+    '.dev',
+    '.app',
+    '.ai',
+  ];
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-5">
@@ -218,32 +296,221 @@ export const SearchView: React.FC<SearchViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
-          <div className="inline-flex p-1 bg-slate-100 rounded-xl">
-            <button
-              type="button"
-              onClick={() => setMode('free')}
-              className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                mode === 'free' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Free Open Registries ({freeCountLabel})
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('all')}
-              className={`px-3.5 py-2 text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
-                mode === 'all' ? 'bg-white text-blue-600 shadow-xs' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              All Global Extensions ({visibleCountLabel})
-            </button>
+        <div className="space-y-3 pt-2 border-t border-slate-100">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-700">Select Domain Type</span>
+            {results.length > 0 && (
+              <span className="text-xs text-slate-500 tabular-nums">
+                {results.length} real domains found
+              </span>
+            )}
           </div>
 
-          {results.length > 0 && (
-            <span className="text-xs text-slate-500 tabular-nums">
-              {results.length} live ready · Endless real-time catalog active
-            </span>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+            {(
+              [
+                { id: 'all_free', label: `Free Open ($0)`, sub: `${freeCountLabel} suffixes` },
+                { id: 'instant_live', label: 'Instant Live DNS', sub: '.dedyn.io / .dynv6.net' },
+                { id: 'popular_global', label: 'Global TLDs', sub: '.com, .net, .org, .co' },
+                { id: 'tech_dev', label: 'Tech & Apps', sub: '.io, .dev, .app, .ai' },
+                { id: 'all_global', label: `All (${visibleCountLabel})`, sub: 'Full IANA catalog' },
+              ] as const
+            ).map((cat) => {
+              const active = domainType === cat.id;
+              return (
+                <button
+                  key={cat.id}
+                  type="button"
+                  onClick={() => setDomainType(cat.id)}
+                  className={`px-3 py-2 rounded-xl border text-left transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border-slate-200'
+                  }`}
+                >
+                  <div className="text-xs font-bold truncate">{cat.label}</div>
+                  <div
+                    className={`text-[10px] truncate ${
+                      active ? 'text-blue-100' : 'text-slate-500'
+                    }`}
+                  >
+                    {cat.sub}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+            <span className="text-[11px] font-medium text-slate-500 mr-1">Quick extension:</span>
+            {quickExtensions.map((ext) => {
+              const active = tldFilter.trim().toLowerCase() === ext;
+              return (
+                <button
+                  key={ext}
+                  type="button"
+                  onClick={() => {
+                    if (active) {
+                      setTldFilter('');
+                    } else {
+                      setTldFilter(ext);
+                      if (
+                        ['.com', '.net', '.org', '.io', '.dev', '.app', '.ai'].includes(ext) &&
+                        domainType === 'all_free'
+                      ) {
+                        setDomainType('all_global');
+                      }
+                    }
+                  }}
+                  className={`px-2 py-1 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+                  }`}
+                >
+                  {ext}
+                </button>
+              );
+            })}
+            {tldFilter && (
+              <button
+                type="button"
+                onClick={() => setTldFilter('')}
+                className="px-2 py-1 text-[11px] font-semibold text-blue-600 hover:underline cursor-pointer"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 space-y-2.5">
+          {(caps.desecConfigured || caps.dynv6Configured || desecToken || dynv6Token) && !editingKey ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-start gap-2 text-emerald-800">
+                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                <span>
+                  <strong className="text-emerald-800">Live Global DNS API Active:</strong>{' '}
+                  {(caps.desecConfigured || desecToken) && (
+                    <>
+                      Claiming any <strong>.dedyn.io</strong> domain registers it automatically via <strong>deSEC</strong>.{' '}
+                    </>
+                  )}
+                  {(caps.dynv6Configured || dynv6Token) && (
+                    <>
+                      Claiming <strong>.dynv6.net / .v6.rocks / .dns.army</strong> registers automatically via <strong>Dynv6 (No ID)</strong>.
+                    </>
+                  )}
+                </span>
+              </div>
+              {!(caps.desecConfigured && caps.dynv6Configured) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTokenInput('');
+                    setEditingKey(true);
+                  }}
+                  className="text-blue-600 hover:underline font-semibold shrink-0 self-start sm:self-auto cursor-pointer"
+                >
+                  Paste / Add Key
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              <div className="flex items-start justify-between gap-2 flex-wrap">
+                <div className="flex items-start gap-2">
+                  <KeyRound className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                  <div>
+                    <strong className="text-slate-900">100% Free Auto-Registration (No ID / Document Verification):</strong>{' '}
+                    Use your <strong>deSEC</strong> token (<code className="bg-white px-1 py-0.5 rounded border border-slate-200">DESEC_API_TOKEN</code> for <strong>.dedyn.io</strong>) or a free email-only{' '}
+                    <a
+                      href="https://dynv6.com/keys"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-blue-600 underline font-semibold"
+                    >
+                      Dynv6 HTTP Token
+                    </a>{' '}
+                    (<code className="bg-white px-1 py-0.5 rounded border border-slate-200">DYNV6_API_TOKEN</code> for <strong>.dynv6.net / .v6.rocks / .dns.army</strong>).
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeyProvider('desec');
+                    setTokenInput(desecToken || '');
+                    setKeyErr('');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                    keyProvider === 'desec'
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-slate-700 border-slate-300'
+                  }`}
+                >
+                  deSEC Token (.dedyn.io)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setKeyProvider('dynv6');
+                    setTokenInput(dynv6Token || '');
+                    setKeyErr('');
+                  }}
+                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                    keyProvider === 'dynv6'
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : 'bg-white text-slate-700 border-slate-300'
+                  }`}
+                >
+                  Dynv6 Token (.dynv6.net · No ID)
+                </button>
+              </div>
+
+              <form onSubmit={handleConnectProviderKey} className="flex flex-col sm:flex-row gap-2">
+                <input
+                  type="password"
+                  value={tokenInput}
+                  onChange={(e) => setTokenInput(e.target.value)}
+                  placeholder={
+                    keyProvider === 'desec'
+                      ? 'Paste your deSEC API token here...'
+                      : 'Paste your free Dynv6 HTTP Token here...'
+                  }
+                  className="flex-1 bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none"
+                />
+                <div className="flex items-center gap-2">
+                  <button
+                    type="submit"
+                    disabled={verifyingKey || tokenInput.trim().length < 6}
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shrink-0"
+                  >
+                    {verifyingKey && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    <span>{verifyingKey ? 'Verifying...' : 'Connect Key'}</span>
+                  </button>
+                  {editingKey && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingKey(false)}
+                      className="px-3 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-semibold rounded-xl cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
+              </form>
+
+              {keyErr && <div className="text-red-600 font-medium">{keyErr}</div>}
+            </div>
+          )}
+
+          {keyStatusMsg && (
+            <div className="text-emerald-700 font-medium pt-1 border-t border-slate-200/80">
+              {keyStatusMsg}
+            </div>
           )}
         </div>
       </div>
@@ -254,20 +521,25 @@ export const SearchView: React.FC<SearchViewProps> = ({
         </div>
       )}
 
-      {/* Selected Link Preview Card when user taps a domain link */}
+      {/* Selected Domain Preview Card when user taps a domain */}
       {selectedPreview && (
         <div className="bg-blue-50/70 border border-blue-200 rounded-2xl p-4 sm:px-6 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="min-w-0 space-y-0.5">
-            <div className="text-xs font-semibold text-blue-800">Selected Domain Link</div>
+            <div className="text-xs font-semibold text-blue-800">Selected Domain</div>
             <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-base font-extrabold text-slate-900 break-all">
+                {selectedPreview.name}
+                <span className="text-blue-600">{selectedPreview.tld}</span>
+              </span>
               <a
                 href={`https://${selectedPreview.domain}`}
                 target="_blank"
                 rel="noreferrer"
-                className="text-base font-bold text-blue-700 underline underline-offset-2 inline-flex items-center gap-1 break-all"
+                className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+                title={`Visit ${selectedPreview.domain}`}
               >
-                <span>https://{selectedPreview.domain}</span>
-                <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                <span>Open</span>
+                <ExternalLink className="w-3 h-3 shrink-0" />
               </a>
               <span className="text-xs text-slate-600">· {selectedPreview.providerLabel}</span>
             </div>
@@ -279,7 +551,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
             className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shrink-0"
           >
             <Check className="w-3.5 h-3.5" />
-            <span>Claim {selectedPreview.domain} ($0.00)</span>
+            <span>Claim {selectedPreview.domain} ({selectedPreview.isFree ? '$0.00' : 'Save'})</span>
           </button>
         </div>
       )}
@@ -326,10 +598,17 @@ export const SearchView: React.FC<SearchViewProps> = ({
                     <button
                       type="button"
                       onClick={() => setSelectedPreview(item)}
-                      className="text-base font-bold text-blue-600 hover:text-blue-800 underline underline-offset-2 text-left cursor-pointer break-all"
+                      className="text-base font-extrabold text-left cursor-pointer break-all hover:opacity-80"
                     >
-                      https://{item.domain}
+                      <span className="text-slate-900">{item.name}</span>
+                      <span className="text-blue-600">{item.tld}</span>
                     </button>
+                    {item.registrationType === 'live_api' && (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold">
+                        <Zap className="w-3 h-3" />
+                        Instant Live
+                      </span>
+                    )}
                     <span className="text-xs text-slate-500">· {item.providerLabel}</span>
                   </div>
                   <div className="text-xs mt-1 flex items-center gap-2 flex-wrap">
@@ -340,7 +619,13 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 </div>
 
                 <div className="flex items-center gap-3 shrink-0 justify-between sm:justify-end">
-                  <span className="text-xs font-bold text-emerald-700">$0.00 / Free</span>
+                  <span
+                    className={`text-xs font-bold ${
+                      item.isFree ? 'text-emerald-700' : 'text-amber-700'
+                    }`}
+                  >
+                    {item.isFree ? '$0.00 / Free' : 'ICANN Registrar'}
+                  </span>
                   <button
                     type="button"
                     onClick={() => onGetDomain(item)}

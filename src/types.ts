@@ -70,6 +70,7 @@ export interface DomainSearchResult {
   tld: string;
   available: boolean;
   isFree: boolean;
+  registrationType?: 'live_api' | 'external_free' | 'icann_registrar';
   providerLabel: string;
   dnsStatus: string;
   nameservers: string[];
@@ -194,3 +195,45 @@ export type PortalSection =
   | 'support'
   | 'affiliates'
   | 'store';
+
+export type DomainSearchCategory =
+  | 'all_free'
+  | 'instant_live'
+  | 'popular_global'
+  | 'tech_dev'
+  | 'all_global';
+
+export interface WhoisLookupResult {
+  domain: string;
+  registered: boolean;
+  registrar?: string;
+  status: string[];
+  createdDate?: string;
+  expiryDate?: string;
+  updatedDate?: string;
+  nameservers: string[];
+  aRecords: string[];
+  aaaaRecords: string[];
+  mxRecords: string[];
+  txtRecords: string[];
+  soaRecord?: string;
+  rdapSource?: string;
+  checkedAt: string;
+}
+
+export interface SslCheckResult {
+  domain: string;
+  tlsConnected: boolean;
+  authorized: boolean;
+  authorizationError?: string;
+  issuer?: string;
+  subject?: string;
+  validFrom?: string;
+  validTo?: string;
+  daysRemaining?: number;
+  protocol?: string;
+  altnames?: string[];
+  error?: string;
+  checkedAt: string;
+}
+

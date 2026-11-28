@@ -1,8 +1,11 @@
 import {
   DnsRecordTypeOption,
+  DomainSearchCategory,
   DomainSearchResult,
   LiveDnsLookupResult,
   NameserverVerificationResult,
+  SslCheckResult,
+  WhoisLookupResult,
 } from '../types';
 
 export async function fetchJson<T = any>(
@@ -30,25 +33,37 @@ export async function fetchJson<T = any>(
 }
 
 const CURATED_FREE_OPEN_DOMAINS: { tld: string; providerLabel: string }[] = [
+  { tld: '.dedyn.io', providerLabel: 'deSEC Live Global DNS (Free API)' },
+  { tld: '.dynv6.net', providerLabel: 'Dynv6 Live Global DNS (Free · No ID)' },
+  { tld: '.v6.rocks', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
+  { tld: '.dns.army', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
+  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free · Cloudflare OK)' },
+  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain (Cloudflare OK)' },
+  { tld: '.qzz.io', providerLabel: 'DigitalPlat Subdomain (Free · Cloudflare OK)' },
+  { tld: '.duckdns.org', providerLabel: 'DuckDNS Free Live Subdomain' },
   { tld: '.is-a.dev', providerLabel: 'Open Developer Registry (Free)' },
   { tld: '.js.org', providerLabel: 'JS.org Open Registry (Free)' },
-  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free)' },
-  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain' },
-  { tld: '.qzz.io', providerLabel: 'Open Subdomain (Free)' },
-  { tld: '.dedyn.io', providerLabel: 'deSEC Free DNS' },
-  { tld: '.dynv6.net', providerLabel: 'Dynv6 Free Open DNS' },
   { tld: '.eu.org', providerLabel: 'EU.org Open Registry (Free)' },
-  { tld: '.pages.dev', providerLabel: 'Cloudflare Pages (Free)' },
+  { tld: '.pages.dev', providerLabel: 'Cloudflare Pages Hosting (Free)' },
   { tld: '.workers.dev', providerLabel: 'Cloudflare Workers (Free)' },
-  { tld: '.github.io', providerLabel: 'GitHub Pages (Free)' },
+  { tld: '.github.io', providerLabel: 'GitHub Pages Hosting (Free)' },
   { tld: '.netlify.app', providerLabel: 'Netlify Hosting (Free)' },
   { tld: '.vercel.app', providerLabel: 'Vercel Hosting (Free)' },
-  { tld: '.onrender.com', providerLabel: 'Render Cloud (Free)' },
-  { tld: '.world', providerLabel: 'OpenWorld Free Link ($0)' },
-  { tld: '.open', providerLabel: 'OpenWorld Free Link ($0)' },
-  { tld: '.free', providerLabel: 'OpenWorld Free Link ($0)' },
-  { tld: '.space', providerLabel: 'OpenWorld Free Link ($0)' },
+  { tld: '.onrender.com', providerLabel: 'Render Cloud Hosting (Free)' },
 ];
+
+export const DESEC_TLDS = ['.dedyn.io'];
+export const DYNV6_TLDS = ['.dynv6.net', '.v6.rocks', '.dns.army', '.v6.navy', '.dns.navy'];
+
+export function isDesecDomainClient(domain: string): boolean {
+  const clean = domain.toLowerCase().trim();
+  return DESEC_TLDS.some((t) => clean.endsWith(t));
+}
+
+export function isDynv6DomainClient(domain: string): boolean {
+  const clean = domain.toLowerCase().trim();
+  return DYNV6_TLDS.some((t) => clean.endsWith(t));
+}
 
 const PRIORITY_GLOBAL_TLDS = [
   '.com', '.net', '.org', '.io', '.dev', '.app', '.ai', '.co', '.xyz', '.tech',
@@ -270,9 +285,18 @@ async function checkDomainViaGoogleDoH(
         );
       }
 
+      const isDesec = isDesecDomainClient(domain);
+      const isDynv6 = isDynv6DomainClient(domain);
+
       if (nsData.Status === 3) {
         available = true;
-        dnsStatus = 'Available · Free Domain Ready';
+        dnsStatus = isDesec
+          ? 'Available · Free Live DNS via deSEC (.dedyn.io)'
+          : isDynv6
+            ? `Available · Free on Dynv6 (${tld} · No ID)`
+            : isFree
+              ? 'Available · Free Public Registry'
+              : 'Unregistered · External Registrar';
       } else if (nsData.Status === 0 && nameservers.length > 0) {
         available = false;
         dnsStatus = 'Registered';
@@ -288,7 +312,13 @@ async function checkDomainViaGoogleDoH(
             dnsStatus = 'Active Site Online';
           } else if (aData.Status === 0 || aData.Status === 3) {
             available = true;
-            dnsStatus = 'Available · Free Domain Ready';
+            dnsStatus = isDesec
+              ? 'Available · Free Live DNS via deSEC (.dedyn.io)'
+              : isDynv6
+                ? `Available · Free on Dynv6 (${tld} · No ID)`
+                : isFree
+                  ? 'Available · Free Public Registry'
+                  : 'Unregistered · External Registrar';
           }
         }
       } else {
@@ -308,12 +338,126 @@ async function checkDomainViaGoogleDoH(
     tld,
     available,
     isFree,
+    registrationType:
+      isDesecDomainClient(domain) || isDynv6DomainClient(domain)
+        ? 'live_api'
+        : isFree
+          ? 'external_free'
+          : 'icann_registrar',
     providerLabel,
     dnsStatus,
     nameservers,
     latencyMs: Date.now() - start,
     lookupSource: 'Google Public DNS (Live)',
   };
+}
+
+export async function getDomainCapabilitiesRealTime(): Promise<{
+  desecConfigured: boolean;
+  dynv6Configured: boolean;
+}> {
+  try {
+    return await fetchJson('/api/domains/capabilities');
+  } catch {
+    return { desecConfigured: false, dynv6Configured: false };
+  }
+}
+
+export async function verifyDesecTokenRealTime(desecToken: string): Promise<{
+  verified: boolean;
+  domainsCount: number;
+}> {
+  return await fetchJson('/api/domains/verify-desec', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ desecToken }),
+  });
+}
+
+export async function verifyDynv6TokenRealTime(dynv6Token: string): Promise<{
+  verified: boolean;
+  zonesCount: number;
+}> {
+  return await fetchJson('/api/domains/verify-dynv6', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dynv6Token }),
+  });
+}
+
+export async function provisionLiveDomainRealTime(payload: {
+  domain: string;
+  desecToken?: string;
+  dynv6Token?: string;
+}): Promise<{
+  provisionedLive: boolean;
+  provider?: string;
+  nameservers?: string[];
+  needsApiKey?: string;
+  message?: string;
+}> {
+  return await fetchJson('/api/domains/provision', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function syncDesecDnsRecordRealTime(payload: {
+  domain: string;
+  type: string;
+  host: string;
+  value: string;
+  priority?: number;
+  desecToken?: string;
+}) {
+  return await fetchJson('/api/desec/dns/upsert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteDesecDnsRecordRealTime(payload: {
+  domain: string;
+  type: string;
+  host: string;
+  desecToken?: string;
+}) {
+  return await fetchJson('/api/desec/dns/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function syncDynv6DnsRecordRealTime(payload: {
+  domain: string;
+  type: string;
+  host: string;
+  value: string;
+  ttl?: number;
+  priority?: number;
+  dynv6Token?: string;
+}) {
+  return await fetchJson('/api/dynv6/dns/upsert', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteDynv6DnsRecordRealTime(payload: {
+  domain: string;
+  type: string;
+  host: string;
+  dynv6Token?: string;
+}) {
+  return await fetchJson('/api/dynv6/dns/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function getTldStatsRealTime(): Promise<{
@@ -384,9 +528,15 @@ function buildBrowserEndlessCandidate(
   };
 }
 
+const TECH_DEV_BROWSER_TLDS = new Set([
+  '.io', '.dev', '.app', '.ai', '.tech', '.cloud', '.so', '.is-a.dev', '.js.org',
+  '.pages.dev', '.workers.dev', '.github.io', '.vercel.app', '.netlify.app', '.dedyn.io',
+]);
+
 export async function searchDomainsRealTime(params: {
   query: string;
   mode: 'free' | 'all';
+  domainType?: DomainSearchCategory;
   page: number;
   cursor?: number;
   limit: number;
@@ -411,6 +561,7 @@ export async function searchDomainsRealTime(params: {
     cursor: String(startCursor),
     limit: String(params.limit),
   });
+  if (params.domainType) qs.set('domainType', params.domainType);
   if (params.tldFilter?.trim()) qs.set('tldFilter', params.tldFilter.trim());
 
   try {
@@ -438,7 +589,20 @@ export async function searchDomainsRealTime(params: {
     }
 
     const catalog = await loadBrowserPublicSuffixCatalog(params.signal);
-    let targets = params.mode === 'free' ? [...catalog.freeTargets] : [...catalog.allTargets];
+    let targets =
+      params.domainType === 'instant_live'
+        ? catalog.freeTargets.filter((t) => isDesecDomainClient(t.tld) || isDynv6DomainClient(t.tld))
+        : params.domainType === 'popular_global'
+          ? catalog.allTargets.filter((t) => PRIORITY_GLOBAL_TLDS.includes(t.tld))
+          : params.domainType === 'tech_dev'
+            ? catalog.allTargets.filter((t) => TECH_DEV_BROWSER_TLDS.has(t.tld))
+            : params.domainType === 'all_global'
+              ? [...catalog.allTargets]
+              : params.domainType === 'all_free'
+                ? [...catalog.freeTargets]
+                : params.mode === 'free'
+                  ? [...catalog.freeTargets]
+                  : [...catalog.allTargets];
 
     if (explicitExt) {
       const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
@@ -797,4 +961,39 @@ export async function verifyDnsRecordRealTime(payload: {
     };
   }
 }
+
+export async function getDomainWhoisRealTime(domain: string): Promise<WhoisLookupResult> {
+  try {
+    return await fetchJson(`/api/domains/whois?domain=${encodeURIComponent(domain)}`);
+  } catch {
+    const cleanDomain = domain.toLowerCase().trim();
+    const [nsRes, aRes, mxRes, txtRes] = await Promise.all([
+      fetch(`https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=NS`).then((r) => r.json()).catch(() => ({ Answer: [], Status: 2 })),
+      fetch(`https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=A`).then((r) => r.json()).catch(() => ({ Answer: [], Status: 2 })),
+      fetch(`https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=MX`).then((r) => r.json()).catch(() => ({ Answer: [], Status: 2 })),
+      fetch(`https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=TXT`).then((r) => r.json()).catch(() => ({ Answer: [], Status: 2 })),
+    ]);
+    const nameservers = (nsRes.Answer || []).filter((a: any) => a.type === 2).map((a: any) => String(a.data).replace(/\.$/, '').toLowerCase());
+    const aRecords = (aRes.Answer || []).filter((a: any) => a.type === 1).map((a: any) => String(a.data));
+    const mxRecords = (mxRes.Answer || []).filter((a: any) => a.type === 15).map((a: any) => String(a.data).replace(/\.$/, ''));
+    const txtRecords = (txtRes.Answer || []).filter((a: any) => a.type === 16).map((a: any) => String(a.data).replace(/^"+|"+$/g, ''));
+    return {
+      domain: cleanDomain,
+      registered: nsRes.Status === 0 || aRecords.length > 0,
+      status: [],
+      nameservers,
+      aRecords,
+      aaaaRecords: [],
+      mxRecords,
+      txtRecords,
+      rdapSource: 'Google Public DNS',
+      checkedAt: new Date().toISOString(),
+    };
+  }
+}
+
+export async function checkDomainSslRealTime(domain: string): Promise<SslCheckResult> {
+  return await fetchJson(`/api/domains/ssl-check?domain=${encodeURIComponent(domain)}`);
+}
+
 

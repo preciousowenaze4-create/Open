@@ -172,7 +172,13 @@ export const CloudflareConnectModal: React.FC<CloudflareConnectModalProps> = ({
       }
       if (!res.ok) {
         if (data.canCreateZone) setCanCreateZone(true);
-        throw new Error(data.error || 'Could not connect Cloudflare zone.');
+        const msg = String(data.error || 'Could not connect Cloudflare zone.');
+        if (/not a registered domain|invalid domain|failed to lookup registrar/i.test(msg)) {
+          throw new Error(
+            `${msg} Cloudflare can only connect domains that are already registered at a real registrar or supported public suffix (e.g. Namecheap for .com, DigitalPlat for .us.kg / .dpdns.org). Note: deSEC (.dedyn.io) and Dynv6 (.dynv6.net) manage DNS directly inside OpenHost without needing Cloudflare.`
+          );
+        }
+        throw new Error(msg);
       }
 
       if (selectedDomainObj) {

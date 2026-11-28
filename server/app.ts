@@ -1,6 +1,7 @@
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
+import tls from 'tls';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 
@@ -55,25 +56,27 @@ function savePublishedSites(sites: Record<string, PublishedSite>) {
 const publishedSites = loadPublishedSites();
 
 const CURATED_FREE_OPEN_DOMAINS: { tld: string; providerLabel: string }[] = [
+  { tld: '.dedyn.io', providerLabel: 'deSEC Live Global DNS (Free API)' },
+  { tld: '.dynv6.net', providerLabel: 'Dynv6 Live Global DNS (Free · No ID)' },
+  { tld: '.v6.rocks', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
+  { tld: '.dns.army', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
+  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free · Cloudflare OK)' },
+  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain (Cloudflare OK)' },
+  { tld: '.qzz.io', providerLabel: 'DigitalPlat Subdomain (Free · Cloudflare OK)' },
+  { tld: '.duckdns.org', providerLabel: 'DuckDNS Free Live Subdomain' },
   { tld: '.is-a.dev', providerLabel: 'Open Developer Registry (Free)' },
   { tld: '.js.org', providerLabel: 'JS.org Open Registry (Free)' },
-  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free)' },
-  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain' },
-  { tld: '.qzz.io', providerLabel: 'Open Subdomain (Free)' },
-  { tld: '.dedyn.io', providerLabel: 'deSEC Free DNS' },
-  { tld: '.dynv6.net', providerLabel: 'Dynv6 Free Open DNS' },
   { tld: '.eu.org', providerLabel: 'EU.org Open Registry (Free)' },
-  { tld: '.pages.dev', providerLabel: 'Cloudflare Pages (Free)' },
+  { tld: '.pages.dev', providerLabel: 'Cloudflare Pages Hosting (Free)' },
   { tld: '.workers.dev', providerLabel: 'Cloudflare Workers (Free)' },
-  { tld: '.github.io', providerLabel: 'GitHub Pages (Free)' },
+  { tld: '.github.io', providerLabel: 'GitHub Pages Hosting (Free)' },
   { tld: '.netlify.app', providerLabel: 'Netlify Hosting (Free)' },
   { tld: '.vercel.app', providerLabel: 'Vercel Hosting (Free)' },
-  { tld: '.onrender.com', providerLabel: 'Render Cloud (Free)' },
-  { tld: '.world', providerLabel: 'OpenWorld Free Link ($0)' },
-  { tld: '.open', providerLabel: 'OpenWorld Free Link ($0)' },
-  { tld: '.free', providerLabel: 'OpenWorld Free Link ($0)' },
-  { tld: '.space', providerLabel: 'OpenWorld Free Link ($0)' },
+  { tld: '.onrender.com', providerLabel: 'Render Cloud Hosting (Free)' },
 ];
+
+const DESEC_TLDS = new Set(['.dedyn.io']);
+const DYNV6_TLDS = new Set(['.dynv6.net', '.v6.rocks', '.dns.army', '.v6.navy', '.dns.navy']);
 
 const PRIORITY_GLOBAL_TLDS = [
   '.com', '.net', '.org', '.io', '.dev', '.app', '.ai', '.co', '.xyz', '.tech',
@@ -281,6 +284,32 @@ async function getLivePublicSuffixCatalog(): Promise<SuffixCatalog> {
   };
 }
 
+// Pre-warm Public Suffix + IANA root catalog in the background so first search has zero lag
+void getLivePublicSuffixCatalog().catch(() => {});
+
+function getDomainCapabilities() {
+  return {
+    desecConfigured: Boolean((process.env.DESEC_API_TOKEN || '').trim()),
+    dynv6Configured: Boolean((process.env.DYNV6_API_TOKEN || '').trim()),
+  };
+}
+
+function isDesecDomain(domainOrTld: string): boolean {
+  const low = domainOrTld.toLowerCase().trim();
+  for (const t of DESEC_TLDS) {
+    if (low === t || low.endsWith(t)) return true;
+  }
+  return false;
+}
+
+function isDynv6Domain(domainOrTld: string): boolean {
+  const low = domainOrTld.toLowerCase().trim();
+  for (const t of DYNV6_TLDS) {
+    if (low === t || low.endsWith(t)) return true;
+  }
+  return false;
+}
+
 async function checkRealDomainAvailability(
   domain: string,
   tld: string,
@@ -292,10 +321,69 @@ async function checkRealDomainAvailability(
   let dnsStatus = 'Checking...';
   let nameservers: string[] = [];
   let lookupSource = 'Google Public DNS (Live)';
+  const caps = getDomainCapabilities();
+  const isDesec = isDesecDomain(tld);
+  const isDynv6 = isDynv6Domain(tld);
+  const registrationType: 'live_api' | 'external_free' | 'icann_registrar' =
+    isDesec || isDynv6
+      ? 'live_api'
+      : isFree
+        ? 'external_free'
+        : 'icann_registrar';
 
   try {
+    // Use real Verisign RDAP registration check for .com and .net so parked/held domains aren't falsely marked Available
+    if (tld === '.com' || tld === '.net') {
+      const rdapEndpoint =
+        tld === '.com'
+          ? `https://rdap.verisign.com/com/v1/domain/${encodeURIComponent(domain)}`
+          : `https://rdap.verisign.com/net/v1/domain/${encodeURIComponent(domain)}`;
+      const rCtl = new AbortController();
+      const rTimer = setTimeout(() => rCtl.abort(), 2200);
+      const rRes = await fetch(rdapEndpoint, { signal: rCtl.signal }).catch(() => null);
+      clearTimeout(rTimer);
+
+      if (rRes) {
+        lookupSource = 'Verisign RDAP Registry (Live)';
+        if (rRes.status === 200) {
+          available = false;
+          dnsStatus = 'Registered';
+          return {
+            domain,
+            name: domain.slice(0, domain.length - tld.length),
+            tld,
+            available,
+            isFree,
+            registrationType,
+            providerLabel,
+            dnsStatus,
+            nameservers,
+            latencyMs: Date.now() - start,
+            lookupSource,
+          };
+        }
+        if (rRes.status === 404) {
+          available = true;
+          dnsStatus = 'Available · External Registrar';
+          return {
+            domain,
+            name: domain.slice(0, domain.length - tld.length),
+            tld,
+            available,
+            isFree,
+            registrationType,
+            providerLabel,
+            dnsStatus,
+            nameservers,
+            latencyMs: Date.now() - start,
+            lookupSource,
+          };
+        }
+      }
+    }
+
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 3200);
+    const timer = setTimeout(() => controller.abort(), 2200);
     const nsRes = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=NS`, {
       signal: controller.signal,
     });
@@ -313,14 +401,24 @@ async function checkRealDomainAvailability(
 
       if (nsData.Status === 3) {
         available = true;
-        dnsStatus = 'Available · Free Domain Ready';
+        dnsStatus = isDesec
+          ? caps.desecConfigured
+            ? 'Available · 1-Click Live DNS Ready (deSEC)'
+            : 'Available · Free Live DNS via deSEC (.dedyn.io)'
+          : isDynv6
+            ? caps.dynv6Configured
+              ? 'Available · 1-Click Live DNS Ready (No ID)'
+              : 'Available · Free Live DNS via Dynv6 (No ID)'
+            : isFree
+              ? 'Available · Free Public Registry'
+              : 'Unregistered · External Registrar';
       } else if (nsData.Status === 0) {
         if (nameservers.length > 0) {
           available = false;
           dnsStatus = 'Registered';
         } else {
           const aController = new AbortController();
-          const aTimer = setTimeout(() => aController.abort(), 2400);
+          const aTimer = setTimeout(() => aController.abort(), 1800);
           const aRes = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=A`, {
             signal: aController.signal,
           });
@@ -332,7 +430,17 @@ async function checkRealDomainAvailability(
               dnsStatus = 'Active Site Online';
             } else if (aData.Status === 0 || aData.Status === 3) {
               available = true;
-              dnsStatus = 'Available · Free Domain Ready';
+              dnsStatus = isDesec
+                ? caps.desecConfigured
+                  ? 'Available · 1-Click Live DNS Ready (deSEC)'
+                  : 'Available · Free Live DNS via deSEC (.dedyn.io)'
+                : isDynv6
+                  ? caps.dynv6Configured
+                    ? 'Available · 1-Click Live DNS Ready (No ID)'
+                    : 'Available · Free Live DNS via Dynv6 (No ID)'
+                  : isFree
+                    ? 'Available · Free Public Registry'
+                    : 'Unregistered · External Registrar';
             }
           }
         }
@@ -353,6 +461,7 @@ async function checkRealDomainAvailability(
     tld,
     available,
     isFree,
+    registrationType,
     providerLabel,
     dnsStatus,
     nameservers,
@@ -417,6 +526,11 @@ app.get('/api/domains/tlds/stats', async (_req, res) => {
   });
 });
 
+const TECH_DEV_TLDS = new Set([
+  '.io', '.dev', '.app', '.ai', '.tech', '.cloud', '.so', '.is-a.dev', '.js.org',
+  '.pages.dev', '.workers.dev', '.github.io', '.vercel.app', '.netlify.app', '.dedyn.io',
+]);
+
 app.get('/api/domains/search', async (req, res) => {
   const rawQuery = ((req.query.q as string) || '').trim().toLowerCase();
   const explicitExtMatch = rawQuery.match(/^([a-z0-9-]+)(\.[a-z0-9.-]+)$/i);
@@ -431,6 +545,7 @@ app.get('/api/domains/search', async (req, res) => {
   }
 
   const mode = (req.query.mode as string) === 'all' ? 'all' : 'free';
+  const domainType = ((req.query.domainType as string) || '').trim();
   const page = Math.max(1, parseInt((req.query.page as string) || '1', 10) || 1);
   const limit = Math.min(30, Math.max(10, parseInt((req.query.limit as string) || '24', 10) || 24));
   const rawCursor = req.query.cursor !== undefined ? parseInt(String(req.query.cursor), 10) : NaN;
@@ -438,7 +553,22 @@ app.get('/api/domains/search', async (req, res) => {
   const filterText = ((req.query.tldFilter as string) || '').toLowerCase().trim();
 
   const catalog = await getLivePublicSuffixCatalog();
-  let targets = mode === 'free' ? [...catalog.freeTargets] : [...catalog.allTargets];
+  let targets: { tld: string; isFree: boolean; providerLabel: string }[];
+
+  if (domainType === 'instant_live') {
+    targets = catalog.freeTargets.filter((t) => isDesecDomain(t.tld) || isDynv6Domain(t.tld));
+  } else if (domainType === 'popular_global') {
+    const prioritySet = new Set(PRIORITY_GLOBAL_TLDS);
+    targets = catalog.allTargets.filter((t) => prioritySet.has(t.tld));
+  } else if (domainType === 'tech_dev') {
+    targets = catalog.allTargets.filter((t) => TECH_DEV_TLDS.has(t.tld));
+  } else if (domainType === 'all_global') {
+    targets = [...catalog.allTargets];
+  } else if (domainType === 'all_free') {
+    targets = [...catalog.freeTargets];
+  } else {
+    targets = mode === 'free' ? [...catalog.freeTargets] : [...catalog.allTargets];
+  }
 
   if (explicitExt) {
     const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
@@ -479,11 +609,12 @@ app.get('/api/domains/search', async (req, res) => {
   const availableResults: Awaited<ReturnType<typeof checkRealDomainAvailability>>[] = [];
   let idx = startCursor;
   let scanned = 0;
-  const maxScan = 98;
+  const maxScan = 90;
+  const searchDeadline = Date.now() + 3800;
 
-  while (availableResults.length < limit && scanned < maxScan) {
+  while (availableResults.length < limit && scanned < maxScan && Date.now() < searchDeadline) {
     const remainingNeeded = limit - availableResults.length;
-    const batchSize = Math.min(14, remainingNeeded + 4, maxScan - scanned);
+    const batchSize = Math.min(20, remainingNeeded + 6, maxScan - scanned);
     if (batchSize <= 0) break;
 
     const batchCandidates: { domain: string; tld: string; isFree: boolean; providerLabel: string }[] = [];
@@ -531,6 +662,673 @@ app.get('/api/domains/search', async (req, res) => {
     hasMore: true,
     results: availableResults,
   });
+});
+
+app.get('/api/domains/whois', async (req, res) => {
+  const rawDomain = String(req.query.domain || '').toLowerCase().trim();
+  const cleanDomain = rawDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  if (!cleanDomain || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(cleanDomain)) {
+    return res.status(400).json({ error: 'Valid domain parameter is required.' });
+  }
+
+  try {
+    const parts = cleanDomain.split('.');
+    const rdapCandidate =
+      parts.length > 2 &&
+      (cleanDomain.endsWith('.dedyn.io') ||
+        cleanDomain.endsWith('.dynv6.net') ||
+        cleanDomain.endsWith('.v6.rocks') ||
+        cleanDomain.endsWith('.dns.army') ||
+        cleanDomain.endsWith('.us.kg') ||
+        cleanDomain.endsWith('.dpdns.org') ||
+        cleanDomain.endsWith('.qzz.io'))
+        ? parts.slice(-2).join('.')
+        : cleanDomain;
+
+    const rdapUrl = cleanDomain.endsWith('.com')
+      ? `https://rdap.verisign.com/com/v1/domain/${encodeURIComponent(cleanDomain)}`
+      : cleanDomain.endsWith('.net')
+        ? `https://rdap.verisign.com/net/v1/domain/${encodeURIComponent(cleanDomain)}`
+        : `https://rdap.org/domain/${encodeURIComponent(rdapCandidate)}`;
+
+    const doh = async (qType: string) => {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 3000);
+      const r = await fetch(
+        `https://dns.google/resolve?name=${encodeURIComponent(cleanDomain)}&type=${qType}`,
+        { signal: ctl.signal }
+      );
+      clearTimeout(t);
+      return (await r.json()) as { Status: number; Answer?: { type: number; data: string }[] };
+    };
+
+    const rdapFetch = async () => {
+      try {
+        const ctl = new AbortController();
+        const t = setTimeout(() => ctl.abort(), 3800);
+        const r = await fetch(rdapUrl, {
+          headers: { Accept: 'application/rdap+json, application/json' },
+          signal: ctl.signal,
+        });
+        clearTimeout(t);
+        if (!r.ok) return { status: r.status, data: null as any };
+        return { status: r.status, data: (await r.json()) as any };
+      } catch {
+        return { status: 0, data: null as any };
+      }
+    };
+
+    const [rdapRes, nsRes, aRes, aaaaRes, mxRes, txtRes, soaRes] = await Promise.all([
+      rdapFetch(),
+      doh('NS').catch(() => ({ Status: 2, Answer: [] })),
+      doh('A').catch(() => ({ Status: 2, Answer: [] })),
+      doh('AAAA').catch(() => ({ Status: 2, Answer: [] })),
+      doh('MX').catch(() => ({ Status: 2, Answer: [] })),
+      doh('TXT').catch(() => ({ Status: 2, Answer: [] })),
+      doh('SOA').catch(() => ({ Status: 2, Answer: [] })),
+    ]);
+
+    const rdap = rdapRes.data;
+    let registrar: string | undefined;
+    if (rdap && Array.isArray(rdap.entities)) {
+      const regEnt =
+        rdap.entities.find((e: any) => Array.isArray(e.roles) && e.roles.includes('registrar')) ||
+        rdap.entities[0];
+      const fn = regEnt?.vcardArray?.[1]?.find?.((v: any) => Array.isArray(v) && v[0] === 'fn')?.[3];
+      if (typeof fn === 'string' && fn.trim()) registrar = fn.trim();
+    }
+
+    const events = Array.isArray(rdap?.events) ? rdap.events : [];
+    const createdDate = events.find((e: any) => e.eventAction === 'registration')?.eventDate;
+    const expiryDate = events.find((e: any) => e.eventAction === 'expiration')?.eventDate;
+    const updatedDate = events.find((e: any) => e.eventAction === 'last changed')?.eventDate;
+
+    const rdapNs = Array.isArray(rdap?.nameservers)
+      ? rdap.nameservers.map((n: any) => String(n.ldhName || '').toLowerCase()).filter(Boolean)
+      : [];
+    const liveNs = (nsRes.Answer || [])
+      .filter((a) => a.type === 2)
+      .map((a) => String(a.data).replace(/\.$/, '').toLowerCase());
+    const nameservers = Array.from(new Set([...liveNs, ...(rdapCandidate === cleanDomain ? rdapNs : [])]));
+
+    const aRecords = (aRes.Answer || []).filter((a) => a.type === 1).map((a) => String(a.data));
+    const aaaaRecords = (aaaaRes.Answer || []).filter((a) => a.type === 28).map((a) => String(a.data));
+    const mxRecords = (mxRes.Answer || []).filter((a) => a.type === 15).map((a) => String(a.data).replace(/\.$/, ''));
+    const txtRecords = (txtRes.Answer || [])
+      .filter((a) => a.type === 16)
+      .map((a) => String(a.data).replace(/^"+|"+$/g, ''));
+    const soaRecord = (soaRes.Answer || []).find((a) => a.type === 6)?.data;
+
+    const registered =
+      nsRes.Status === 0 ||
+      aRecords.length > 0 ||
+      aaaaRecords.length > 0 ||
+      Boolean(soaRecord) ||
+      (rdapCandidate === cleanDomain && rdapRes.status === 200);
+
+    res.json({
+      domain: cleanDomain,
+      registered,
+      registrar:
+        registrar ||
+        (cleanDomain.endsWith('.dedyn.io')
+          ? 'deSEC e.V. (Subdomain Registry)'
+          : isDynv6Domain(cleanDomain)
+            ? 'Dynv6 (Subdomain Registry)'
+            : undefined),
+      status: Array.isArray(rdap?.status) ? rdap.status : [],
+      createdDate,
+      expiryDate,
+      updatedDate,
+      nameservers,
+      aRecords,
+      aaaaRecords,
+      mxRecords,
+      txtRecords,
+      soaRecord,
+      rdapSource: rdap ? (cleanDomain.endsWith('.com') || cleanDomain.endsWith('.net') ? 'Verisign RDAP' : 'RDAP.org') : 'Google Public DNS',
+      checkedAt: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(502).json({ error: err?.message || 'WHOIS / RDAP lookup failed.' });
+  }
+});
+
+app.get('/api/domains/ssl-check', async (req, res) => {
+  const rawDomain = String(req.query.domain || '').toLowerCase().trim();
+  const cleanDomain = rawDomain.replace(/^https?:\/\//i, '').replace(/\/.*$/, '');
+  if (!cleanDomain || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(cleanDomain)) {
+    return res.status(400).json({ error: 'Valid domain parameter is required.' });
+  }
+
+  const result = await new Promise<any>((resolve) => {
+    let settled = false;
+    const finish = (payload: any) => {
+      if (settled) return;
+      settled = true;
+      resolve(payload);
+    };
+
+    const socket = tls.connect(
+      {
+        host: cleanDomain,
+        port: 443,
+        servername: cleanDomain,
+        rejectUnauthorized: false,
+      },
+      () => {
+        try {
+          const cert = socket.getPeerCertificate();
+          const protocol = socket.getProtocol() || undefined;
+          const authorized = socket.authorized;
+          const authorizationError = socket.authorizationError
+            ? String(socket.authorizationError)
+            : undefined;
+          const validFrom = cert?.valid_from;
+          const validTo = cert?.valid_to;
+          const daysRemaining = validTo
+            ? Math.floor((new Date(validTo).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+            : undefined;
+          const issuer =
+            cert?.issuer?.O || cert?.issuer?.CN || undefined;
+          const subject = cert?.subject?.CN || undefined;
+          const altnames = typeof cert?.subjectaltname === 'string'
+            ? cert.subjectaltname
+                .split(',')
+                .map((s) => s.trim().replace(/^DNS:/, ''))
+                .filter(Boolean)
+                .slice(0, 8)
+            : [];
+
+          socket.end();
+          finish({
+            domain: cleanDomain,
+            tlsConnected: Boolean(cert && Object.keys(cert).length > 0),
+            authorized,
+            authorizationError,
+            issuer,
+            subject,
+            validFrom,
+            validTo,
+            daysRemaining,
+            protocol,
+            altnames,
+            checkedAt: new Date().toISOString(),
+          });
+        } catch (e: any) {
+          socket.destroy();
+          finish({
+            domain: cleanDomain,
+            tlsConnected: false,
+            authorized: false,
+            error: e?.message || 'Certificate inspection failed.',
+            checkedAt: new Date().toISOString(),
+          });
+        }
+      }
+    );
+
+    socket.setTimeout(3500, () => {
+      socket.destroy();
+      finish({
+        domain: cleanDomain,
+        tlsConnected: false,
+        authorized: false,
+        error: 'TLS port 443 timed out — point A/CNAME DNS records to your host first.',
+        checkedAt: new Date().toISOString(),
+      });
+    });
+
+    socket.on('error', (err: any) => {
+      finish({
+        domain: cleanDomain,
+        tlsConnected: false,
+        authorized: false,
+        error: err?.code === 'ENOTFOUND'
+          ? 'Domain does not resolve on public DNS yet.'
+          : err?.message || 'Could not reach port 443.',
+        checkedAt: new Date().toISOString(),
+      });
+    });
+  });
+
+  res.json(result);
+});
+
+app.get('/api/domains/capabilities', (_req, res) => {
+  res.json(getDomainCapabilities());
+});
+
+async function dynv6Fetch(endpoint: string, token: string, options: RequestInit = {}) {
+  const resp = await fetch(`https://dynv6.com/api/v2${endpoint}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token.trim()}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const text = await resp.text();
+  let data: any = null;
+  if (text.trim()) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { message: text };
+    }
+  }
+  if (!resp.ok) {
+    const msg =
+      data?.message ||
+      data?.error ||
+      (Array.isArray(data?.errors) ? data.errors.map((e: any) => e.message || e).join(', ') : '') ||
+      `Dynv6 API error (${resp.status})`;
+    throw new Error(String(msg));
+  }
+  return data;
+}
+
+async function desecFetch(endpoint: string, token: string, options: RequestInit = {}) {
+  const resp = await fetch(`https://desec.io/api/v1${endpoint}`, {
+    ...options,
+    headers: {
+      Authorization: `Token ${token.trim()}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const text = await resp.text();
+  let data: any = null;
+  if (text.trim()) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { detail: text };
+    }
+  }
+  if (!resp.ok) {
+    const msg =
+      data?.detail ||
+      data?.name?.[0] ||
+      data?.records?.[0] ||
+      data?.message ||
+      `deSEC API error (${resp.status})`;
+    throw new Error(String(msg));
+  }
+  return data;
+}
+
+function formatDesecRecordValue(type: string, value: string, priority?: number): string {
+  const cleanType = type.toUpperCase().trim();
+  const raw = value.trim();
+  if (cleanType === 'TXT') {
+    return raw.startsWith('"') && raw.endsWith('"') ? raw : JSON.stringify(raw);
+  }
+  if (cleanType === 'CNAME' || cleanType === 'NS' || cleanType === 'PTR' || cleanType === 'DNAME') {
+    const hostOnly = raw.replace(/\.+$/, '');
+    return `${hostOnly}.`;
+  }
+  if (cleanType === 'MX') {
+    const parts = raw.split(/\s+/);
+    if (parts.length >= 2 && /^\d+$/.test(parts[0])) {
+      const target = parts[1].replace(/\.+$/, '');
+      return `${parts[0]} ${target}.`;
+    }
+    const prio = typeof priority === 'number' && Number.isFinite(priority) ? priority : 10;
+    const target = raw.replace(/\.+$/, '');
+    return `${prio} ${target}.`;
+  }
+  return raw;
+}
+
+app.post('/api/domains/verify-desec', async (req, res) => {
+  const token = String(req.body?.desecToken || process.env.DESEC_API_TOKEN || '').trim();
+  if (!token || token.length < 6) {
+    return res.status(400).json({ error: 'Paste a valid deSEC API token.' });
+  }
+  try {
+    const domains = await desecFetch('/domains/', token);
+    res.json({
+      verified: true,
+      domainsCount: Array.isArray(domains) ? domains.length : 0,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not verify deSEC API token.' });
+  }
+});
+
+app.post('/api/desec/dns/upsert', async (req, res) => {
+  const { domain, type, host, value, priority, desecToken } = req.body || {};
+  const cleanDomain = String(domain || '').toLowerCase().trim();
+  const token = String(desecToken || process.env.DESEC_API_TOKEN || '').trim();
+
+  if (!isDesecDomain(cleanDomain)) {
+    return res.status(400).json({ error: 'Live deSEC sync applies to .dedyn.io zones.' });
+  }
+  if (!token) {
+    return res.status(400).json({ error: 'DESEC_API_TOKEN is required to publish .dedyn.io DNS records.' });
+  }
+
+  const cleanType = String(type || 'A').toUpperCase().trim();
+  const cleanHost = String(host || '@').toLowerCase().trim();
+  const isApex = cleanHost === '@' || cleanHost === cleanDomain;
+  const subname = isApex
+    ? ''
+    : cleanHost.replace(new RegExp(`\\.${cleanDomain.replace(/\./g, '\\.')}$`), '');
+  const formattedRecord = formatDesecRecordValue(cleanType, String(value || ''), priority);
+
+  try {
+    const existingDomain = await desecFetch(`/domains/${encodeURIComponent(cleanDomain)}/`, token).catch(
+      () => null
+    );
+    if (!existingDomain) {
+      await desecFetch('/domains/', token, {
+        method: 'POST',
+        body: JSON.stringify({ name: cleanDomain }),
+      });
+    }
+
+    const rrset = await desecFetch(`/domains/${encodeURIComponent(cleanDomain)}/rrsets/`, token, {
+      method: 'PUT',
+      body: JSON.stringify([
+        {
+          subname,
+          type: cleanType,
+          ttl: 3600,
+          records: [formattedRecord],
+        },
+      ]),
+    });
+
+    res.json({ success: true, domain: cleanDomain, rrset });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to publish DNS record to deSEC.' });
+  }
+});
+
+app.post('/api/desec/dns/delete', async (req, res) => {
+  const { domain, type, host, desecToken } = req.body || {};
+  const cleanDomain = String(domain || '').toLowerCase().trim();
+  const token = String(desecToken || process.env.DESEC_API_TOKEN || '').trim();
+  if (!cleanDomain || !token || !type) {
+    return res.status(400).json({ error: 'Domain, type, and deSEC token are required.' });
+  }
+
+  const cleanType = String(type).toUpperCase().trim();
+  const cleanHost = String(host || '@').toLowerCase().trim();
+  const isApex = cleanHost === '@' || cleanHost === cleanDomain;
+  const subname = isApex
+    ? ''
+    : cleanHost.replace(new RegExp(`\\.${cleanDomain.replace(/\./g, '\\.')}$`), '');
+
+  try {
+    await desecFetch(`/domains/${encodeURIComponent(cleanDomain)}/rrsets/`, token, {
+      method: 'PUT',
+      body: JSON.stringify([
+        {
+          subname,
+          type: cleanType,
+          ttl: 3600,
+          records: [],
+        },
+      ]),
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete deSEC DNS record.' });
+  }
+});
+
+app.post('/api/domains/verify-dynv6', async (req, res) => {
+  const token = String(req.body?.dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+  if (!token || token.length < 6) {
+    return res.status(400).json({ error: 'Paste a valid Dynv6 HTTP Token from dynv6.com/keys.' });
+  }
+  try {
+    const zones = await dynv6Fetch('/zones', token);
+    res.json({
+      verified: true,
+      zonesCount: Array.isArray(zones) ? zones.length : 0,
+    });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Could not verify Dynv6 HTTP Token.' });
+  }
+});
+
+app.post('/api/domains/provision', async (req, res) => {
+  const { domain, desecToken, dynv6Token } = req.body || {};
+  const cleanDomain = String(domain || '').toLowerCase().trim();
+  if (!cleanDomain || !/^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(cleanDomain)) {
+    return res.status(400).json({ error: 'Valid domain name is required.' });
+  }
+
+  if (isDesecDomain(cleanDomain)) {
+    const token = String(desecToken || process.env.DESEC_API_TOKEN || '').trim();
+    if (!token) {
+      return res.json({
+        provisionedLive: false,
+        needsApiKey: 'DESEC_API_TOKEN',
+        provider: 'deSEC Live Global DNS',
+        message: 'Add your DESEC_API_TOKEN in environment variables or paste it in the app to register .dedyn.io domains live.',
+      });
+    }
+
+    try {
+      const existing = await desecFetch(`/domains/${encodeURIComponent(cleanDomain)}/`, token).catch(
+        () => null
+      );
+      const created =
+        existing ||
+        (await desecFetch('/domains/', token, {
+          method: 'POST',
+          body: JSON.stringify({ name: cleanDomain }),
+        }));
+
+      return res.status(201).json({
+        provisionedLive: true,
+        domain: created?.name || cleanDomain,
+        provider: 'deSEC Live Global DNS',
+        nameservers: ['ns1.desec.io', 'ns2.desec.org'],
+        message: `${cleanDomain} is now LIVE on global DNS (ns1.desec.io, ns2.desec.org)!`,
+      });
+    } catch (err: any) {
+      return res.status(400).json({
+        provisionedLive: false,
+        error: err.message || 'Could not provision domain on deSEC.',
+      });
+    }
+  }
+
+  if (isDynv6Domain(cleanDomain)) {
+    const token = String(dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+    if (!token) {
+      return res.json({
+        provisionedLive: false,
+        needsApiKey: 'DYNV6_API_TOKEN',
+        provider: 'Dynv6 Free Global DNS (No ID)',
+        message:
+          'Paste your free Dynv6 HTTP Token (from dynv6.com/keys — email signup only, no ID needed) to register this domain live on global DNS immediately.',
+      });
+    }
+
+    try {
+      const existingZones = await dynv6Fetch('/zones', token).catch(() => []);
+      const existingMatch = Array.isArray(existingZones)
+        ? existingZones.find((z: any) => String(z.name || '').toLowerCase() === cleanDomain)
+        : null;
+
+      const created =
+        existingMatch ||
+        (await dynv6Fetch('/zones', token, {
+          method: 'POST',
+          body: JSON.stringify({ name: cleanDomain }),
+        }));
+
+      return res.status(201).json({
+        provisionedLive: true,
+        zoneId: created?.id,
+        domain: created?.name || cleanDomain,
+        provider: 'Dynv6 Live Global DNS',
+        nameservers: ['ns1.dynv6.com', 'ns2.dynv6.com'],
+        message: `${cleanDomain} is now LIVE on global DNS (ns1.dynv6.com, ns2.dynv6.com)!`,
+      });
+    } catch (err: any) {
+      return res.status(400).json({
+        provisionedLive: false,
+        error: err.message || 'Could not provision domain on Dynv6.',
+      });
+    }
+  }
+
+  return res.json({
+    provisionedLive: false,
+    provider: 'External Registry Domain',
+    message:
+      'Pick a .dedyn.io domain (with DESEC_API_TOKEN) or a .dynv6.net / .v6.rocks / .dns.army domain (with DYNV6_API_TOKEN) for automatic 1-click live global registration.',
+  });
+});
+
+app.post('/api/dynv6/dns/upsert', async (req, res) => {
+  const { domain, type, host, value, dynv6Token } = req.body || {};
+  const cleanDomain = String(domain || '').toLowerCase().trim();
+  const token = String(dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+
+  if (!isDynv6Domain(cleanDomain)) {
+    return res.status(400).json({ error: 'Live Dynv6 sync applies to .dynv6.net, .v6.rocks, and .dns.army zones.' });
+  }
+  if (!token) {
+    return res.status(400).json({ error: 'Paste your free Dynv6 HTTP Token (dynv6.com/keys) to push live records.' });
+  }
+
+  const cleanType = String(type || 'A').toUpperCase().trim();
+  const cleanHost = String(host || '@').toLowerCase().trim();
+  const isApex = cleanHost === '@' || cleanHost === cleanDomain;
+  const subname = isApex
+    ? cleanDomain
+    : cleanHost.replace(new RegExp(`\\.${cleanDomain.replace(/\./g, '\\.')}$`), '');
+  const cleanVal = String(value || '').trim();
+
+  try {
+    const zones = await dynv6Fetch('/zones', token);
+    let zone = Array.isArray(zones)
+      ? zones.find((z: any) => String(z.name || '').toLowerCase() === cleanDomain)
+      : null;
+
+    if (!zone) {
+      zone = await dynv6Fetch('/zones', token, {
+        method: 'POST',
+        body: JSON.stringify({ name: cleanDomain }),
+      });
+    }
+
+    const zoneId = zone.id;
+
+    // Apex A or AAAA records can also be updated directly on the zone object
+    if (isApex && cleanType === 'A') {
+      await dynv6Fetch(`/zones/${zoneId}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ ipv4address: cleanVal }),
+      });
+    } else if (isApex && cleanType === 'AAAA') {
+      await dynv6Fetch(`/zones/${zoneId}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ ipv6prefix: cleanVal }),
+      });
+    }
+
+    const existingRecords = await dynv6Fetch(`/zones/${zoneId}/records`, token).catch(() => []);
+    const targetRecName = isApex ? cleanDomain : subname;
+    const match = Array.isArray(existingRecords)
+      ? existingRecords.find(
+          (r: any) =>
+            String(r.type || '').toUpperCase() === cleanType &&
+            (String(r.name || '').toLowerCase() === targetRecName ||
+              (isApex && (r.name === '' || r.name === '@')))
+        )
+      : null;
+
+    let resultRecord: any = null;
+    if (!(isApex && (cleanType === 'A' || cleanType === 'AAAA'))) {
+      if (match) {
+        resultRecord = await dynv6Fetch(`/zones/${zoneId}/records/${match.id}`, token, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            name: targetRecName,
+            type: cleanType,
+            data: cleanVal,
+          }),
+        });
+      } else {
+        resultRecord = await dynv6Fetch(`/zones/${zoneId}/records`, token, {
+          method: 'POST',
+          body: JSON.stringify({
+            name: targetRecName,
+            type: cleanType,
+            data: cleanVal,
+          }),
+        });
+      }
+    }
+
+    res.json({ success: true, zoneId, record: resultRecord });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to publish DNS record to Dynv6.' });
+  }
+});
+
+app.post('/api/dynv6/dns/delete', async (req, res) => {
+  const { domain, type, host, dynv6Token } = req.body || {};
+  const cleanDomain = String(domain || '').toLowerCase().trim();
+  const token = String(dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+  if (!cleanDomain || !token || !type) {
+    return res.status(400).json({ error: 'Domain, type, and Dynv6 token are required.' });
+  }
+
+  try {
+    const zones = await dynv6Fetch('/zones', token);
+    const zone = Array.isArray(zones)
+      ? zones.find((z: any) => String(z.name || '').toLowerCase() === cleanDomain)
+      : null;
+    if (!zone) return res.json({ success: true });
+
+    const cleanTypeUpper = String(type).toUpperCase().trim();
+    const cleanHost = String(host || '@').toLowerCase().trim();
+    const isApex = cleanHost === '@' || cleanHost === cleanDomain;
+
+    if (isApex && cleanTypeUpper === 'A') {
+      await dynv6Fetch(`/zones/${zone.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ ipv4address: '' }),
+      });
+    } else if (isApex && cleanTypeUpper === 'AAAA') {
+      await dynv6Fetch(`/zones/${zone.id}`, token, {
+        method: 'PATCH',
+        body: JSON.stringify({ ipv6prefix: '' }),
+      });
+    }
+
+    const subname = isApex
+      ? cleanDomain
+      : cleanHost.replace(new RegExp(`\\.${cleanDomain.replace(/\./g, '\\.')}$`), '');
+    const existingRecords = await dynv6Fetch(`/zones/${zone.id}/records`, token).catch(() => []);
+    const match = Array.isArray(existingRecords)
+      ? existingRecords.find(
+          (r: any) =>
+            String(r.type || '').toUpperCase() === cleanTypeUpper &&
+            (String(r.name || '').toLowerCase() === subname ||
+              (isApex && (r.name === '' || r.name === '@')))
+        )
+      : null;
+
+    if (match) {
+      await dynv6Fetch(`/zones/${zone.id}/records/${match.id}`, token, { method: 'DELETE' });
+    }
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(400).json({ error: err.message || 'Failed to delete Dynv6 DNS record.' });
+  }
 });
 
 async function cloudflareFetch(endpoint: string, apiToken: string, options: RequestInit = {}) {
@@ -1219,6 +2017,7 @@ function detectDnsProvider(ns: string): string {
   if (host.includes('hetzner.')) return 'Hetzner DNS';
   if (host.includes('linode.com') || host.includes('akam.net')) return 'Akamai / Linode DNS';
   if (host.includes('bunny.net')) return 'Bunny DNS';
+  if (host.includes('dynv6.')) return 'Dynv6 DNS';
   if (host.includes('desec.')) return 'deSEC DNS';
   if (host.includes('afraid.org')) return 'FreeDNS';
   if (host.includes('duckdns.org')) return 'DuckDNS';

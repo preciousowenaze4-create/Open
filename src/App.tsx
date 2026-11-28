@@ -9,7 +9,7 @@ import {
   mapProfileRow,
   mapTicketRow,
 } from './supabase';
-import { fetchJson } from './utils/api';
+import { fetchJson, provisionLiveDomainRealTime } from './utils/api';
 import {
   DomainRecord,
   DomainSearchResult,
@@ -60,6 +60,8 @@ function PortalAppContent() {
   const [activeSection, setActiveSection] = useState<PortalSection>('dashboard');
   const [activeDomainId, setActiveDomainId] = useState<string>('');
   const [sessionTokensByDomain, setSessionTokensByDomain] = useState<Record<string, string>>({});
+  const [desecToken, setDesecToken] = useState('');
+  const [dynv6Token, setDynv6Token] = useState('');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [cloudflareModalDomain, setCloudflareModalDomain] = useState<DomainRecord | null | undefined>(
     undefined
@@ -131,6 +133,8 @@ function PortalAppContent() {
           setOrders([]);
           setTickets([]);
           setSessionTokensByDomain({});
+          setDesecToken('');
+          setDynv6Token('');
         } else {
           loadUserWorkspace(nextUser.id);
         }
@@ -232,6 +236,20 @@ function PortalAppContent() {
     const nextYear = `${new Date().getFullYear() + 1}-12-31`;
 
     try {
+      const prov = await provisionLiveDomainRealTime({
+        domain: result.domain,
+        desecToken: desecToken || undefined,
+        dynv6Token: dynv6Token || undefined,
+      }).catch(() => ({
+        provisionedLive: false,
+        nameservers: [] as string[],
+        provider: result.providerLabel,
+        message: '',
+      }));
+
+      const isLiveRegistered = Boolean(prov?.provisionedLive);
+      const liveNameservers = isLiveRegistered && Array.isArray(prov.nameservers) ? prov.nameservers : [];
+
       const { data: domainRow, error: domErr } = await supabase
         .from('domains')
         .insert({
@@ -240,9 +258,10 @@ function PortalAppContent() {
           domain: result.domain,
           name: result.name,
           tld: result.tld,
-          provider_label: result.providerLabel,
-          status: 'active',
-          nameserver_mode: 'default',
+          provider_label: isLiveRegistered ? prov.provider || 'Dynv6 Live Global DNS' : result.providerLabel,
+          status: isLiveRegistered ? 'active' : 'pending_dns',
+          nameserver_mode: liveNameservers.length > 0 ? 'custom' : 'default',
+          nameservers: liveNameservers,
           registrar_lock: true,
           expires_at: nextYear,
           auto_renew: true,
@@ -258,7 +277,7 @@ function PortalAppContent() {
           id: orderId,
           user_id: supabaseUser.id,
           domain: result.domain,
-          amount_label: '$0.00 Free',
+          amount_label: result.isFree ? '$0.00 Free' : 'Draft (Registrar Required)',
           status: 'completed',
         })
         .select('*')
@@ -272,12 +291,20 @@ function PortalAppContent() {
       setDomains((prev) => [mappedDomain, ...prev]);
       setOrders((prev) => [mappedOrder, ...prev]);
       setActiveDomainId(domainId);
-      setToast(
-        `${result.domain} added to your account! Configure custom nameservers or connect your DNS provider.`
-      );
-      setTimeout(() => setToast(''), 5500);
-      setActiveSection('my_domains');
-      setCloudflareModalDomain(mappedDomain);
+
+      if (isLiveRegistered) {
+        setToast(
+          `${result.domain} is now LIVE on global DNS (${liveNameservers.join(', ')}). Paste your Vercel/host DNS records now.`
+        );
+        setTimeout(() => setToast(''), 7000);
+        setActiveSection('manage_dns');
+      } else {
+        setToast(
+          `${result.domain} saved to workspace. Note: register at its real registry/registrar before Cloudflare or Vercel can verify it.`
+        );
+        setTimeout(() => setToast(''), 7000);
+        setActiveSection('my_domains');
+      }
     } catch (err: any) {
       setToast(err?.message || 'Could not claim domain. Check your Supabase SQL tables.');
       setTimeout(() => setToast(''), 4500);
@@ -462,6 +489,10 @@ function PortalAppContent() {
             onBuildSite={handleBuildSiteQuick}
             onDomainUpdated={handleDomainUpdated}
             sessionToken={activeDomainObj ? sessionTokensByDomain[activeDomainObj.id] : undefined}
+            desecToken={desecToken}
+            onSaveDesecToken={setDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={setDynv6Token}
           />
         )}
 
@@ -477,6 +508,10 @@ function PortalAppContent() {
             onNavigate={handleSelectSection}
             onDomainUpdated={handleDomainUpdated}
             sessionToken={activeDomainObj ? sessionTokensByDomain[activeDomainObj.id] : undefined}
+            desecToken={desecToken}
+            onSaveDesecToken={setDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={setDynv6Token}
           />
         )}
 
@@ -542,6 +577,10 @@ function PortalAppContent() {
             acquiringDomain={acquiringDomain}
             onNavigate={handleSelectSection}
             ownedDomains={domains.map((d) => d.domain)}
+            desecToken={desecToken}
+            onSaveDesecToken={setDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={setDynv6Token}
           />
         )}
 
@@ -555,6 +594,10 @@ function PortalAppContent() {
             onSelectDomainAction={handleSelectDomainAction}
             onNavigate={handleSelectSection}
             sessionTokensByDomain={sessionTokensByDomain}
+            desecToken={desecToken}
+            onSaveDesecToken={setDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={setDynv6Token}
           />
         )}
 

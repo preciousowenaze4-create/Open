@@ -323,9 +323,9 @@ export const MyDomainsView: React.FC<MyDomainsViewProps> = ({
                       href={d.siteUrl || `https://${d.domain}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="text-sm font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-800 inline-flex items-center gap-1 break-all"
+                      className="text-sm font-bold text-blue-600 hover:text-blue-800 hover:underline underline-offset-2 inline-flex items-center gap-1 break-all"
                     >
-                      <span>https://{d.domain}</span>
+                      <span>{d.domain}</span>
                       <ExternalLink className="w-3 h-3 shrink-0" />
                     </a>
 

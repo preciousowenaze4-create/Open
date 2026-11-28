@@ -259,9 +259,9 @@ export const PortalDashboard: React.FC<PortalDashboardProps> = ({
                         href={d.siteUrl}
                         target="_blank"
                         rel="noreferrer"
-                        className="font-semibold text-blue-600 underline underline-offset-2 hover:text-blue-800"
+                        className="font-bold text-blue-600 hover:underline underline-offset-2 hover:text-blue-800"
                       >
-                        https://{d.domain}
+                        {d.domain}
                       </a>
                       <span className="text-slate-400 mx-2">·</span>
                       <span className="text-slate-500">{d.providerLabel}</span>

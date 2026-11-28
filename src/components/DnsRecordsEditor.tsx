@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { getSupabaseClient, mapDnsRecordRow } from '../supabase';
-import { fetchJson, getDnsRecordTypesRealTime, verifyDnsRecordRealTime } from '../utils/api';
+import {
+  deleteDesecDnsRecordRealTime,
+  deleteDynv6DnsRecordRealTime,
+  fetchJson,
+  getDnsRecordTypesRealTime,
+  getDomainCapabilitiesRealTime,
+  isDesecDomainClient,
+  isDynv6DomainClient,
+  syncDesecDnsRecordRealTime,
+  syncDynv6DnsRecordRealTime,
+  verifyDesecTokenRealTime,
+  verifyDnsRecordRealTime,
+  verifyDynv6TokenRealTime,
+} from '../utils/api';
 import { parseRawDnsText, ParsedDnsInput, validateDnsRecordInput } from '../utils/dnsParser';
 import { DnsRecordItem, DnsRecordType, DnsRecordTypeOption, DnsRecordVerificationResult, DomainRecord } from '../types';
 import {
@@ -18,11 +31,18 @@ import {
   ChevronDown,
   Search,
   Globe,
+  KeyRound,
+  Download,
+  Zap,
 } from 'lucide-react';
 
 interface DnsRecordsEditorProps {
   domain: DomainRecord;
   sessionToken?: string;
+  desecToken?: string;
+  onSaveDesecToken?: (token: string) => void;
+  dynv6Token?: string;
+  onSaveDynv6Token?: (token: string) => void;
   compact?: boolean;
 }
 
@@ -63,9 +83,59 @@ function getValuePlaceholder(type: string): string {
   }
 }
 
+interface HostingPreset {
+  id: string;
+  label: string;
+  records: { type: DnsRecordType; host: string; value: string; priority?: number }[];
+}
+
+const HOSTING_PRESETS: HostingPreset[] = [
+  {
+    id: 'vercel',
+    label: 'Vercel',
+    records: [
+      { type: 'A', host: '@', value: '216.198.79.1' },
+      { type: 'CNAME', host: 'www', value: 'cname.vercel-dns.com' },
+    ],
+  },
+  {
+    id: 'netlify',
+    label: 'Netlify',
+    records: [
+      { type: 'A', host: '@', value: '75.2.60.5' },
+      { type: 'CNAME', host: 'www', value: 'apex-loadbalancer.netlify.com' },
+    ],
+  },
+  {
+    id: 'render',
+    label: 'Render',
+    records: [{ type: 'A', host: '@', value: '216.24.57.1' }],
+  },
+  {
+    id: 'github',
+    label: 'GitHub Pages',
+    records: [
+      { type: 'A', host: '@', value: '185.199.108.153' },
+      { type: 'A', host: '@', value: '185.199.109.153' },
+    ],
+  },
+  {
+    id: 'google_mx',
+    label: 'Google Workspace MX',
+    records: [
+      { type: 'MX', host: '@', value: 'smtp.google.com', priority: 1 },
+      { type: 'TXT', host: '@', value: 'v=spf1 include:_spf.google.com ~all' },
+    ],
+  },
+];
+
 export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   domain,
   sessionToken,
+  desecToken = '',
+  onSaveDesecToken,
+  dynv6Token = '',
+  onSaveDynv6Token,
   compact = false,
 }) => {
   const [records, setRecords] = useState<DnsRecordItem[]>([]);
@@ -100,8 +170,55 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [liveChecks, setLiveChecks] = useState<Record<string, DnsRecordVerificationResult>>({});
+  const [providerInput, setProviderInput] = useState(desecToken || dynv6Token);
+  const [verifyingProvider, setVerifyingProvider] = useState(false);
+  const [serverDesecReady, setServerDesecReady] = useState(false);
+  const [serverDynv6Ready, setServerDynv6Ready] = useState(false);
 
+  const isDesecDomain = isDesecDomainClient(domain.domain);
+  const isDynv6Domain = isDynv6DomainClient(domain.domain);
   const hasCloudflareToken = Boolean(domain.cloudflareZoneId && sessionToken?.trim());
+
+  useEffect(() => {
+    if ((!isDesecDomain && !isDynv6Domain) || (isDesecDomain && desecToken) || (isDynv6Domain && dynv6Token)) {
+      return;
+    }
+    getDomainCapabilitiesRealTime()
+      .then((c) => {
+        setServerDesecReady(Boolean(c.desecConfigured));
+        setServerDynv6Ready(Boolean(c.dynv6Configured));
+      })
+      .catch(() => {});
+  }, [isDesecDomain, isDynv6Domain, desecToken, dynv6Token]);
+
+  const handleAttachProviderToken = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const cleaned = providerInput.trim();
+    if (!cleaned) return;
+    setVerifyingProvider(true);
+    setError('');
+    try {
+      if (isDesecDomain) {
+        const res = await verifyDesecTokenRealTime(cleaned);
+        if (res.verified) {
+          onSaveDesecToken?.(cleaned);
+          setNotice('deSEC key connected. Saved DNS records will push live to ns1.desec.io / ns2.desec.org.');
+          setTimeout(() => setNotice(''), 5000);
+        }
+      } else {
+        const res = await verifyDynv6TokenRealTime(cleaned);
+        if (res.verified) {
+          onSaveDynv6Token?.(cleaned);
+          setNotice('Dynv6 key connected. Saved DNS records will push live to ns1.dynv6.com / ns2.dynv6.com.');
+          setTimeout(() => setNotice(''), 5000);
+        }
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Invalid API token.');
+    } finally {
+      setVerifyingProvider(false);
+    }
+  };
 
   useEffect(() => {
     getDnsRecordTypesRealTime()
@@ -265,13 +382,6 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
     let cloudflareRecordId = input.editRecord?.cloudflareRecordId;
     let syncStatus: DnsRecordItem['syncStatus'] = 'saved';
 
-    const verifyPromise = verifyDnsRecordRealTime({
-      domain: domain.domain,
-      type: norm.type,
-      host: norm.host,
-      value: norm.value,
-    }).catch(() => null);
-
     if (hasCloudflareToken && domain.cloudflareZoneId && sessionToken) {
       if (cloudflareRecordId) {
         const cfRes = await fetchJson('/api/cloudflare/dns/update', {
@@ -309,7 +419,37 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
       }
     }
 
-    const verifyResult = await verifyPromise;
+    if (isDesecDomain && (desecToken || serverDesecReady)) {
+      await syncDesecDnsRecordRealTime({
+        domain: domain.domain,
+        type: norm.type,
+        host: norm.host,
+        value: norm.value,
+        priority: norm.priority,
+        desecToken: desecToken || undefined,
+      });
+      syncStatus = 'propagated';
+    }
+
+    if (isDynv6Domain && (dynv6Token || serverDynv6Ready)) {
+      await syncDynv6DnsRecordRealTime({
+        domain: domain.domain,
+        type: norm.type,
+        host: norm.host,
+        value: norm.value,
+        priority: norm.priority,
+        dynv6Token: dynv6Token || undefined,
+      });
+      syncStatus = 'propagated';
+    }
+
+    const verifyResult = await verifyDnsRecordRealTime({
+      domain: domain.domain,
+      type: norm.type,
+      host: norm.host,
+      value: norm.value,
+    }).catch(() => null);
+
     if (syncStatus === 'saved' && verifyResult?.livePropagated) {
       syncStatus = 'propagated';
     }
@@ -489,6 +629,24 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         }).catch(() => {});
       }
 
+      if (isDesecDomain) {
+        await deleteDesecDnsRecordRealTime({
+          domain: domain.domain,
+          type: rec.type,
+          host: rec.host,
+          desecToken: desecToken || undefined,
+        }).catch(() => {});
+      }
+
+      if (isDynv6Domain) {
+        await deleteDynv6DnsRecordRealTime({
+          domain: domain.domain,
+          type: rec.type,
+          host: rec.host,
+          dynv6Token: dynv6Token || undefined,
+        }).catch(() => {});
+      }
+
       const { error: delErr } = await supabase.from('dns_records').delete().eq('id', rec.id);
       if (delErr) throw delErr;
       setRecords((prev) => prev.filter((r) => r.id !== rec.id));
@@ -592,6 +750,69 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
     setTimeout(() => setCopiedId(null), 1800);
   };
 
+  const handleApplyPreset = async (preset: HostingPreset) => {
+    setError('');
+    setNotice('');
+    setSaving(true);
+    let added = 0;
+    try {
+      for (const item of preset.records) {
+        await persistSingleRecord({
+          type: item.type,
+          host: item.host,
+          value: item.value,
+          priority: item.priority,
+          proxied: false,
+        });
+        added += 1;
+      }
+      setNotice(
+        `Applied ${preset.label} DNS preset (${added} record${added > 1 ? 's' : ''}) for ${domain.domain}.`
+      );
+      setTimeout(() => setNotice(''), 6000);
+    } catch (err: any) {
+      setError(
+        added > 0
+          ? `Applied ${added} record(s) from ${preset.label}, stopped on error: ${err?.message}`
+          : err?.message || `Could not apply ${preset.label} preset.`
+      );
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleExportZoneFile = () => {
+    if (records.length === 0) return;
+    const lines = [
+      `; BIND Zone File exported from OpenHost`,
+      `$ORIGIN ${domain.domain}.`,
+      `$TTL 300`,
+      '',
+      ...records.map((r) => {
+        const hostCol = r.host === '@' ? '@' : r.host;
+        const prioCol =
+          r.type.toUpperCase() === 'MX' || r.type.toUpperCase() === 'SRV'
+            ? `${r.priority ?? 10} `
+            : '';
+        const valCol =
+          r.type.toUpperCase() === 'TXT' && !r.value.startsWith('"')
+            ? `"${r.value}"`
+            : r.value;
+        return `${hostCol}\t${r.ttl || 300}\tIN\t${r.type.toUpperCase()}\t${prioCol}${valCol}`;
+      }),
+      '',
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${domain.domain}-zone.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const showsPriority =
     recType.toUpperCase() === 'MX' ||
     recType.toUpperCase() === 'SRV' ||
@@ -624,15 +845,26 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
 
         <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
           {records.length > 0 && (
-            <button
-              type="button"
-              onClick={handleCheckAllLive}
-              disabled={checkingAll}
-              className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              <Globe className={`w-3.5 h-3.5 ${checkingAll ? 'animate-spin' : ''}`} />
-              <span>{checkingAll ? 'Checking Internet...' : 'Track All Live DNS'}</span>
-            </button>
+            <>
+              <button
+                type="button"
+                onClick={handleCheckAllLive}
+                disabled={checkingAll}
+                className="px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <Globe className={`w-3.5 h-3.5 ${checkingAll ? 'animate-spin' : ''}`} />
+                <span>{checkingAll ? 'Checking Internet...' : 'Track All Live DNS'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportZoneFile}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer"
+                title="Download standard BIND zone file (.txt)"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Export Zone</span>
+              </button>
+            </>
           )}
           <button
             type="button"
@@ -643,6 +875,25 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
             <span>{showPasteBox ? 'Hide Paste Box' : 'Paste Raw DNS Text'}</span>
           </button>
         </div>
+      </div>
+
+      {/* 1-Click Hosting DNS Presets */}
+      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <span className="font-semibold text-slate-500 inline-flex items-center gap-1 mr-1">
+          <Zap className="w-3 h-3 text-blue-600" />
+          1-Click Host Presets:
+        </span>
+        {HOSTING_PRESETS.map((preset) => (
+          <button
+            key={preset.id}
+            type="button"
+            disabled={saving}
+            onClick={() => handleApplyPreset(preset)}
+            className="px-2.5 py-1 bg-slate-50 hover:bg-blue-50 border border-slate-200 hover:border-blue-300 text-slate-700 hover:text-blue-700 font-semibold rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+          >
+            + {preset.label}
+          </button>
+        ))}
       </div>
 
       {error && (
@@ -658,6 +909,56 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
           <span>{notice}</span>
         </div>
       )}
+
+      {((isDesecDomain && !desecToken && !serverDesecReady) ||
+        (isDynv6Domain && !dynv6Token && !serverDynv6Ready)) &&
+        !hasCloudflareToken && (
+          <form
+            onSubmit={handleAttachProviderToken}
+            className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl flex flex-col sm:flex-row sm:items-center gap-2.5 text-xs"
+          >
+            <div className="flex items-start gap-2 text-blue-900 flex-1">
+              <KeyRound className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+              <span>
+                {isDesecDomain ? (
+                  <>
+                    Paste your <strong>deSEC API token</strong> to publish records live to global DNS for{' '}
+                    <strong>{domain.domain}</strong>:
+                  </>
+                ) : (
+                  <>
+                    Paste your free{' '}
+                    <a
+                      href="https://dynv6.com/keys"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="underline font-semibold"
+                    >
+                      Dynv6 HTTP Token
+                    </a>{' '}
+                    (email-only, no ID) to publish records live to global DNS when saving:
+                  </>
+                )}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="password"
+                value={providerInput}
+                onChange={(e) => setProviderInput(e.target.value)}
+                placeholder={isDesecDomain ? 'Paste deSEC API Token...' : 'Paste Dynv6 HTTP Token...'}
+                className="bg-white border border-blue-300 rounded-lg px-3 py-1.5 text-xs text-slate-900 w-48 focus:outline-none focus:border-blue-600"
+              />
+              <button
+                type="submit"
+                disabled={verifyingProvider || providerInput.trim().length < 6}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg cursor-pointer shrink-0"
+              >
+                {verifyingProvider ? 'Connecting...' : 'Connect'}
+              </button>
+            </div>
+          </form>
+        )}
 
       {/* Raw DNS Paste Box */}
       {showPasteBox && (

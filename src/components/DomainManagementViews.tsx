@@ -8,6 +8,7 @@ import {
   PrivateNameserverEntry,
 } from '../types';
 import { DnsRecordsEditor } from './DnsRecordsEditor';
+import { DomainDiagnosticsPanel } from './DomainDiagnosticsPanel';
 import {
   Cloud,
   CheckCircle2,
@@ -48,6 +49,7 @@ function guessProviderClient(nsList: string[]): string {
   if (first.includes('hetzner')) return 'Hetzner DNS';
   if (first.includes('linode') || first.includes('akam.net')) return 'Akamai / Linode DNS';
   if (first.includes('bunny.net')) return 'Bunny DNS';
+  if (first.includes('dynv6')) return 'Dynv6 DNS';
   if (first.includes('desec')) return 'deSEC DNS';
   if (first.includes('openhost.world')) return 'OpenHost Managed DNS';
   const parts = first.split('.').filter(Boolean);
@@ -114,9 +116,9 @@ export const DomainSwitcherBar: React.FC<DomainSwitcherBarProps> = ({
           href={activeDomain.siteUrl || `https://${activeDomain.domain}`}
           target="_blank"
           rel="noreferrer"
-          className="text-xs font-medium text-blue-600 hover:underline inline-flex items-center gap-1 shrink-0"
+          className="text-xs font-semibold text-blue-600 hover:underline inline-flex items-center gap-1 shrink-0"
         >
-          <span>https://{activeDomain.domain}</span>
+          <span>{activeDomain.domain}</span>
           <ExternalLink className="w-3.5 h-3.5" />
         </a>
       )}
@@ -208,6 +210,10 @@ interface ManageNameserversViewProps {
   onNavigate: (sec: PortalSection) => void;
   onDomainUpdated: (domain: DomainRecord) => void;
   sessionToken?: string;
+  desecToken?: string;
+  onSaveDesecToken?: (token: string) => void;
+  dynv6Token?: string;
+  onSaveDynv6Token?: (token: string) => void;
 }
 
 export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
@@ -218,6 +224,10 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
   onNavigate,
   onDomainUpdated,
   sessionToken,
+  desecToken,
+  onSaveDesecToken,
+  dynv6Token,
+  onSaveDynv6Token,
 }) => {
   const [mode, setMode] = useState<'default' | 'custom'>('default');
   const [nsList, setNsList] = useState<string[]>(['', '', '', '', '']);
@@ -534,7 +544,15 @@ export const ManageNameserversView: React.FC<ManageNameserversViewProps> = ({
             onNavigate={onNavigate}
           />
 
-          <DnsRecordsEditor domain={activeDomain} sessionToken={sessionToken} compact />
+          <DnsRecordsEditor
+            domain={activeDomain}
+            sessionToken={sessionToken}
+            desecToken={desecToken}
+            onSaveDesecToken={onSaveDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={onSaveDynv6Token}
+            compact
+          />
         </div>
       )}
     </div>
@@ -553,6 +571,10 @@ interface ManageDomainViewProps {
   onBuildSite: (domain: DomainRecord) => void;
   onDomainUpdated: (domain: DomainRecord) => void;
   sessionToken?: string;
+  desecToken?: string;
+  onSaveDesecToken?: (token: string) => void;
+  dynv6Token?: string;
+  onSaveDynv6Token?: (token: string) => void;
 }
 
 export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
@@ -564,6 +586,10 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
   onBuildSite,
   onDomainUpdated,
   sessionToken,
+  desecToken,
+  onSaveDesecToken,
+  dynv6Token,
+  onSaveDynv6Token,
 }) => {
   const [copied, setCopied] = useState(false);
   const [updating, setUpdating] = useState(false);
@@ -617,7 +643,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
 
   const handleCopyDomain = () => {
     if (!activeDomain) return;
-    navigator.clipboard.writeText(`https://${activeDomain.domain}`);
+    navigator.clipboard.writeText(activeDomain.domain);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -664,7 +690,7 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
                   rel="noreferrer"
                   className="text-xl sm:text-2xl font-extrabold text-blue-600 hover:underline inline-flex items-center gap-1.5 break-all"
                 >
-                  <span>https://{activeDomain.domain}</span>
+                  <span>{activeDomain.domain}</span>
                   <ExternalLink className="w-4 h-4 shrink-0" />
                 </a>
                 <button
@@ -816,7 +842,16 @@ export const ManageDomainView: React.FC<ManageDomainViewProps> = ({
             </div>
           </div>
 
-          <DnsRecordsEditor domain={activeDomain} sessionToken={sessionToken} />
+          <DnsRecordsEditor
+            domain={activeDomain}
+            sessionToken={sessionToken}
+            desecToken={desecToken}
+            onSaveDesecToken={onSaveDesecToken}
+            dynv6Token={dynv6Token}
+            onSaveDynv6Token={onSaveDynv6Token}
+          />
+
+          <DomainDiagnosticsPanel domain={activeDomain.domain} />
 
           <DomainManageMenu
             activeSection="manage_domain"

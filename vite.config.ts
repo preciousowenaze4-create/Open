@@ -83,10 +83,21 @@ export default defineConfig(({mode}) => {
           ],
         },
         workbox: {
+          cleanupOutdatedCaches: true,
+          skipWaiting: true,
+          clientsClaim: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           globIgnores: ['assets/aistudio/**'],
           navigateFallbackDenylist: [/^\/api\//, /^\/site\//],
           runtimeCaching: [
+            {
+              urlPattern: /^\/api\/.*/i,
+              handler: 'NetworkOnly',
+            },
+            {
+              urlPattern: /^\/site\/.*/i,
+              handler: 'NetworkOnly',
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',

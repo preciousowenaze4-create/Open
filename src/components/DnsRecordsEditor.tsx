@@ -10,9 +10,7 @@ import {
   isDynv6DomainClient,
   syncDesecDnsRecordRealTime,
   syncDynv6DnsRecordRealTime,
-  verifyDesecTokenRealTime,
   verifyDnsRecordRealTime,
-  verifyDynv6TokenRealTime,
 } from '../utils/api';
 import { parseRawDnsText, ParsedDnsInput, validateDnsRecordInput } from '../utils/dnsParser';
 import { DnsRecordItem, DnsRecordType, DnsRecordTypeOption, DnsRecordVerificationResult, DomainRecord } from '../types';
@@ -31,7 +29,6 @@ import {
   ChevronDown,
   Search,
   Globe,
-  KeyRound,
   Download,
   Zap,
 } from 'lucide-react';
@@ -170,8 +167,6 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [checkingAll, setCheckingAll] = useState(false);
   const [liveChecks, setLiveChecks] = useState<Record<string, DnsRecordVerificationResult>>({});
-  const [providerInput, setProviderInput] = useState(desecToken || dynv6Token);
-  const [verifyingProvider, setVerifyingProvider] = useState(false);
   const [serverDesecReady, setServerDesecReady] = useState(false);
   const [serverDynv6Ready, setServerDynv6Ready] = useState(false);
 
@@ -180,7 +175,9 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
   const hasCloudflareToken = Boolean(domain.cloudflareZoneId && sessionToken?.trim());
 
   useEffect(() => {
-    if ((!isDesecDomain && !isDynv6Domain) || (isDesecDomain && desecToken) || (isDynv6Domain && dynv6Token)) {
+    void onSaveDesecToken;
+    void onSaveDynv6Token;
+    if (!isDesecDomain && !isDynv6Domain) {
       return;
     }
     getDomainCapabilitiesRealTime()
@@ -189,36 +186,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         setServerDynv6Ready(Boolean(c.dynv6Configured));
       })
       .catch(() => {});
-  }, [isDesecDomain, isDynv6Domain, desecToken, dynv6Token]);
-
-  const handleAttachProviderToken = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleaned = providerInput.trim();
-    if (!cleaned) return;
-    setVerifyingProvider(true);
-    setError('');
-    try {
-      if (isDesecDomain) {
-        const res = await verifyDesecTokenRealTime(cleaned);
-        if (res.verified) {
-          onSaveDesecToken?.(cleaned);
-          setNotice('deSEC key connected. Saved DNS records will push live to ns1.desec.io / ns2.desec.org.');
-          setTimeout(() => setNotice(''), 5000);
-        }
-      } else {
-        const res = await verifyDynv6TokenRealTime(cleaned);
-        if (res.verified) {
-          onSaveDynv6Token?.(cleaned);
-          setNotice('Dynv6 key connected. Saved DNS records will push live to ns1.dynv6.com / ns2.dynv6.com.');
-          setTimeout(() => setNotice(''), 5000);
-        }
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Invalid API token.');
-    } finally {
-      setVerifyingProvider(false);
-    }
-  };
+  }, [isDesecDomain, isDynv6Domain]);
 
   useEffect(() => {
     getDnsRecordTypesRealTime()
@@ -419,28 +387,42 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
       }
     }
 
-    if (isDesecDomain && (desecToken || serverDesecReady)) {
-      await syncDesecDnsRecordRealTime({
-        domain: domain.domain,
-        type: norm.type,
-        host: norm.host,
-        value: norm.value,
-        priority: norm.priority,
-        desecToken: desecToken || undefined,
-      });
-      syncStatus = 'propagated';
+    if (isDesecDomain) {
+      try {
+        await syncDesecDnsRecordRealTime({
+          domain: domain.domain,
+          type: norm.type,
+          host: norm.host,
+          value: norm.value,
+          priority: norm.priority,
+          desecToken: desecToken || undefined,
+        });
+        syncStatus = 'propagated';
+      } catch (err: any) {
+        const msg = String(err?.message || '');
+        if (serverDesecReady || desecToken || !msg.toLowerCase().includes('missing in server environment')) {
+          throw err;
+        }
+      }
     }
 
-    if (isDynv6Domain && (dynv6Token || serverDynv6Ready)) {
-      await syncDynv6DnsRecordRealTime({
-        domain: domain.domain,
-        type: norm.type,
-        host: norm.host,
-        value: norm.value,
-        priority: norm.priority,
-        dynv6Token: dynv6Token || undefined,
-      });
-      syncStatus = 'propagated';
+    if (isDynv6Domain) {
+      try {
+        await syncDynv6DnsRecordRealTime({
+          domain: domain.domain,
+          type: norm.type,
+          host: norm.host,
+          value: norm.value,
+          priority: norm.priority,
+          dynv6Token: dynv6Token || undefined,
+        });
+        syncStatus = 'propagated';
+      } catch (err: any) {
+        const msg = String(err?.message || '');
+        if (serverDynv6Ready || dynv6Token || !msg.toLowerCase().includes('missing in server environment')) {
+          throw err;
+        }
+      }
     }
 
     const verifyResult = await verifyDnsRecordRealTime({
@@ -910,55 +892,7 @@ export const DnsRecordsEditor: React.FC<DnsRecordsEditorProps> = ({
         </div>
       )}
 
-      {((isDesecDomain && !desecToken && !serverDesecReady) ||
-        (isDynv6Domain && !dynv6Token && !serverDynv6Ready)) &&
-        !hasCloudflareToken && (
-          <form
-            onSubmit={handleAttachProviderToken}
-            className="p-3.5 bg-blue-50/70 border border-blue-200 rounded-xl flex flex-col sm:flex-row sm:items-center gap-2.5 text-xs"
-          >
-            <div className="flex items-start gap-2 text-blue-900 flex-1">
-              <KeyRound className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-              <span>
-                {isDesecDomain ? (
-                  <>
-                    Paste your <strong>deSEC API token</strong> to publish records live to global DNS for{' '}
-                    <strong>{domain.domain}</strong>:
-                  </>
-                ) : (
-                  <>
-                    Paste your free{' '}
-                    <a
-                      href="https://dynv6.com/keys"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="underline font-semibold"
-                    >
-                      Dynv6 HTTP Token
-                    </a>{' '}
-                    (email-only, no ID) to publish records live to global DNS when saving:
-                  </>
-                )}
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <input
-                type="password"
-                value={providerInput}
-                onChange={(e) => setProviderInput(e.target.value)}
-                placeholder={isDesecDomain ? 'Paste deSEC API Token...' : 'Paste Dynv6 HTTP Token...'}
-                className="bg-white border border-blue-300 rounded-lg px-3 py-1.5 text-xs text-slate-900 w-48 focus:outline-none focus:border-blue-600"
-              />
-              <button
-                type="submit"
-                disabled={verifyingProvider || providerInput.trim().length < 6}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold rounded-lg cursor-pointer shrink-0"
-              >
-                {verifyingProvider ? 'Connecting...' : 'Connect'}
-              </button>
-            </div>
-          </form>
-        )}
+
 
       {/* Raw DNS Paste Box */}
       {showPasteBox && (

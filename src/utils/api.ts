@@ -355,11 +355,23 @@ async function checkDomainViaGoogleDoH(
 export async function getDomainCapabilitiesRealTime(): Promise<{
   desecConfigured: boolean;
   dynv6Configured: boolean;
+  apiReachable: boolean;
 }> {
   try {
-    return await fetchJson('/api/domains/capabilities');
+    const data = await fetchJson(`/api/domains/capabilities?_t=${Date.now()}`, {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
+    });
+    return {
+      desecConfigured: Boolean(data?.desecConfigured),
+      dynv6Configured: Boolean(data?.dynv6Configured),
+      apiReachable: true,
+    };
   } catch {
-    return { desecConfigured: false, dynv6Configured: false };
+    return { desecConfigured: false, dynv6Configured: false, apiReachable: false };
   }
 }
 
@@ -466,7 +478,7 @@ export async function getTldStatsRealTime(): Promise<{
   totalExtensions: number;
 }> {
   try {
-    const data = await fetchJson('/api/domains/tlds/stats');
+    const data = await fetchJson('/api/domains/tlds/stats', { cache: 'no-store' });
     if (data && typeof data.totalExtensions === 'number' && data.totalExtensions > 0) {
       return data;
     }
@@ -567,6 +579,7 @@ export async function searchDomainsRealTime(params: {
   try {
     const data = await fetchJson(`/api/domains/search?${qs.toString()}`, {
       signal: params.signal,
+      cache: 'no-store',
     });
     return {
       ...data,

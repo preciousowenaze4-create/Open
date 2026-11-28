@@ -8,16 +8,37 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const app = express();
+
+// Ensure /api responses are never cached by CDN, browser HTTP cache, or service workers
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
+
+// Vercel @vercel/node may pre-parse JSON req.body before Express sees it; prevent express.json() from waiting on a drained stream
+app.use((req, _res, next) => {
+  if (req.body !== undefined && typeof req.body === 'object' && !(req as any)._body) {
+    (req as any)._body = true;
+  }
+  next();
+});
+
 app.use(express.json({ limit: '1mb' }));
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY || '',
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+function getGeminiClient(): GoogleGenAI | null {
+  const apiKey = readEnvSecret('GEMINI_API_KEY', 'GOOGLE_GENAI_API_KEY');
+  if (!apiKey) return null;
+  return new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
-  },
-});
+  });
+}
 
 const DATA_DIR = process.env.VERCEL
   ? '/tmp/openhost-data'
@@ -284,13 +305,45 @@ async function getLivePublicSuffixCatalog(): Promise<SuffixCatalog> {
   };
 }
 
-// Pre-warm Public Suffix + IANA root catalog in the background so first search has zero lag
-void getLivePublicSuffixCatalog().catch(() => {});
+// Pre-warm Public Suffix + IANA root catalog in persistent server mode (skip on serverless cold starts)
+if (!process.env.VERCEL) {
+  void getLivePublicSuffixCatalog().catch(() => {});
+}
+
+function readEnvSecret(...keys: string[]): string {
+  for (const key of keys) {
+    const raw = process.env[key];
+    if (typeof raw === 'string') {
+      const cleaned = raw.trim().replace(/^["']+|["']+$/g, '').trim();
+      if (cleaned) return cleaned;
+    }
+  }
+  return '';
+}
+
+function getDesecEnvToken(): string {
+  return readEnvSecret(
+    'DESEC_API_TOKEN',
+    'DESEC_TOKEN',
+    'VITE_DESEC_API_TOKEN',
+    'NEXT_PUBLIC_DESEC_API_TOKEN'
+  );
+}
+
+function getDynv6EnvToken(): string {
+  return readEnvSecret(
+    'DYNV6_API_TOKEN',
+    'DYNV6_TOKEN',
+    'DYNV6_HTTP_TOKEN',
+    'VITE_DYNV6_API_TOKEN',
+    'NEXT_PUBLIC_DYNV6_API_TOKEN'
+  );
+}
 
 function getDomainCapabilities() {
   return {
-    desecConfigured: Boolean((process.env.DESEC_API_TOKEN || '').trim()),
-    dynv6Configured: Boolean((process.env.DYNV6_API_TOKEN || '').trim()),
+    desecConfigured: Boolean(getDesecEnvToken()),
+    dynv6Configured: Boolean(getDynv6EnvToken()),
   };
 }
 
@@ -984,9 +1037,9 @@ function formatDesecRecordValue(type: string, value: string, priority?: number):
 }
 
 app.post('/api/domains/verify-desec', async (req, res) => {
-  const token = String(req.body?.desecToken || process.env.DESEC_API_TOKEN || '').trim();
+  const token = String(req.body?.desecToken || getDesecEnvToken()).trim();
   if (!token || token.length < 6) {
-    return res.status(400).json({ error: 'Paste a valid deSEC API token.' });
+    return res.status(400).json({ error: 'Configure DESEC_API_TOKEN in Vercel Environment Variables.' });
   }
   try {
     const domains = await desecFetch('/domains/', token);
@@ -1002,13 +1055,13 @@ app.post('/api/domains/verify-desec', async (req, res) => {
 app.post('/api/desec/dns/upsert', async (req, res) => {
   const { domain, type, host, value, priority, desecToken } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
-  const token = String(desecToken || process.env.DESEC_API_TOKEN || '').trim();
+  const token = String(desecToken || getDesecEnvToken()).trim();
 
   if (!isDesecDomain(cleanDomain)) {
     return res.status(400).json({ error: 'Live deSEC sync applies to .dedyn.io zones.' });
   }
   if (!token) {
-    return res.status(400).json({ error: 'DESEC_API_TOKEN is required to publish .dedyn.io DNS records.' });
+    return res.status(400).json({ error: 'DESEC_API_TOKEN is missing in server environment variables.' });
   }
 
   const cleanType = String(type || 'A').toUpperCase().trim();
@@ -1051,7 +1104,7 @@ app.post('/api/desec/dns/upsert', async (req, res) => {
 app.post('/api/desec/dns/delete', async (req, res) => {
   const { domain, type, host, desecToken } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
-  const token = String(desecToken || process.env.DESEC_API_TOKEN || '').trim();
+  const token = String(desecToken || getDesecEnvToken()).trim();
   if (!cleanDomain || !token || !type) {
     return res.status(400).json({ error: 'Domain, type, and deSEC token are required.' });
   }
@@ -1082,9 +1135,9 @@ app.post('/api/desec/dns/delete', async (req, res) => {
 });
 
 app.post('/api/domains/verify-dynv6', async (req, res) => {
-  const token = String(req.body?.dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+  const token = String(req.body?.dynv6Token || getDynv6EnvToken()).trim();
   if (!token || token.length < 6) {
-    return res.status(400).json({ error: 'Paste a valid Dynv6 HTTP Token from dynv6.com/keys.' });
+    return res.status(400).json({ error: 'Configure DYNV6_API_TOKEN in Vercel Environment Variables.' });
   }
   try {
     const zones = await dynv6Fetch('/zones', token);
@@ -1105,13 +1158,13 @@ app.post('/api/domains/provision', async (req, res) => {
   }
 
   if (isDesecDomain(cleanDomain)) {
-    const token = String(desecToken || process.env.DESEC_API_TOKEN || '').trim();
+    const token = String(desecToken || getDesecEnvToken()).trim();
     if (!token) {
       return res.json({
         provisionedLive: false,
         needsApiKey: 'DESEC_API_TOKEN',
         provider: 'deSEC Live Global DNS',
-        message: 'Add your DESEC_API_TOKEN in environment variables or paste it in the app to register .dedyn.io domains live.',
+        message: 'DESEC_API_TOKEN is not active on this server yet. Add it in Vercel Environment Variables and redeploy.',
       });
     }
 
@@ -1142,14 +1195,14 @@ app.post('/api/domains/provision', async (req, res) => {
   }
 
   if (isDynv6Domain(cleanDomain)) {
-    const token = String(dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+    const token = String(dynv6Token || getDynv6EnvToken()).trim();
     if (!token) {
       return res.json({
         provisionedLive: false,
         needsApiKey: 'DYNV6_API_TOKEN',
         provider: 'Dynv6 Free Global DNS (No ID)',
         message:
-          'Paste your free Dynv6 HTTP Token (from dynv6.com/keys — email signup only, no ID needed) to register this domain live on global DNS immediately.',
+          'DYNV6_API_TOKEN is not active on this server yet. Add it in Vercel Environment Variables and redeploy.',
       });
     }
 
@@ -1193,13 +1246,13 @@ app.post('/api/domains/provision', async (req, res) => {
 app.post('/api/dynv6/dns/upsert', async (req, res) => {
   const { domain, type, host, value, dynv6Token } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
-  const token = String(dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+  const token = String(dynv6Token || getDynv6EnvToken()).trim();
 
   if (!isDynv6Domain(cleanDomain)) {
     return res.status(400).json({ error: 'Live Dynv6 sync applies to .dynv6.net, .v6.rocks, and .dns.army zones.' });
   }
   if (!token) {
-    return res.status(400).json({ error: 'Paste your free Dynv6 HTTP Token (dynv6.com/keys) to push live records.' });
+    return res.status(400).json({ error: 'DYNV6_API_TOKEN is missing in server environment variables.' });
   }
 
   const cleanType = String(type || 'A').toUpperCase().trim();
@@ -1281,7 +1334,7 @@ app.post('/api/dynv6/dns/upsert', async (req, res) => {
 app.post('/api/dynv6/dns/delete', async (req, res) => {
   const { domain, type, host, dynv6Token } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
-  const token = String(dynv6Token || process.env.DYNV6_API_TOKEN || '').trim();
+  const token = String(dynv6Token || getDynv6EnvToken()).trim();
   if (!cleanDomain || !token || !type) {
     return res.status(400).json({ error: 'Domain, type, and Dynv6 token are required.' });
   }
@@ -2157,9 +2210,10 @@ app.post('/api/sites/build', async (req, res) => {
   }
 
   let htmlContent = '';
-  if (process.env.GEMINI_API_KEY) {
+  const aiClient = getGeminiClient();
+  if (aiClient) {
     try {
-      const aiRes = await ai.models.generateContent({
+      const aiRes = await aiClient.models.generateContent({
         model: 'gemini-4-hydrogen',
         contents: `Create a clean, modern, mobile-ready, SEO-optimised single-file HTML5 website using Tailwind CSS CDN (<script src="https://cdn.tailwindcss.com"></script>) for the free domain "${cleanDomain}".
 Business / App Name: ${businessName || cleanDomain}
@@ -2288,7 +2342,13 @@ const handleServeSite = (req: express.Request, res: express.Response) => {
 };
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, timestamp: new Date().toISOString() });
+  res.json({
+    ok: true,
+    timestamp: new Date().toISOString(),
+    runtime: 'node',
+    vercel: Boolean(process.env.VERCEL),
+    ...getDomainCapabilities(),
+  });
 });
 
 app.get('/site/:domain', handleServeSite);

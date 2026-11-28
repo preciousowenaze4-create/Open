@@ -4,11 +4,9 @@ import {
   getDomainCapabilitiesRealTime,
   getTldStatsRealTime,
   searchDomainsRealTime,
-  verifyDesecTokenRealTime,
-  verifyDynv6TokenRealTime,
 } from '../utils/api';
 import { getSupabaseClient } from '../supabase';
-import { Search, Globe, Check, ArrowRight, Loader2, Filter, ExternalLink, KeyRound, CheckCircle2, Zap } from 'lucide-react';
+import { Search, Globe, Check, ArrowRight, Loader2, Filter, ExternalLink, CheckCircle2, Zap, RefreshCw, AlertCircle } from 'lucide-react';
 
 interface SearchViewProps {
   onGetDomain: (result: DomainSearchResult) => Promise<void>;
@@ -45,73 +43,43 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
-  const [caps, setCaps] = useState<{ desecConfigured: boolean; dynv6Configured: boolean }>({
+  const [caps, setCaps] = useState<{
+    desecConfigured: boolean;
+    dynv6Configured: boolean;
+    apiReachable: boolean;
+  }>({
     desecConfigured: false,
     dynv6Configured: false,
+    apiReachable: true,
   });
-  const [keyProvider, setKeyProvider] = useState<'desec' | 'dynv6'>('desec');
-  const [tokenInput, setTokenInput] = useState(desecToken || dynv6Token);
-  const [editingKey, setEditingKey] = useState(false);
-  const [verifyingKey, setVerifyingKey] = useState(false);
-  const [keyStatusMsg, setKeyStatusMsg] = useState('');
-  const [keyErr, setKeyErr] = useState('');
+  const [capsLoaded, setCapsLoaded] = useState(false);
+  const [checkingCaps, setCheckingCaps] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  useEffect(() => {
-    if (keyProvider === 'desec' && desecToken && !tokenInput) {
-      setTokenInput(desecToken);
-    } else if (keyProvider === 'dynv6' && dynv6Token && !tokenInput) {
-      setTokenInput(dynv6Token);
-    }
-  }, [desecToken, dynv6Token, keyProvider]);
-
-  const handleConnectProviderKey = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cleaned = tokenInput.trim();
-    if (!cleaned) return;
-    setVerifyingKey(true);
-    setKeyErr('');
-    setKeyStatusMsg('');
-    try {
-      if (keyProvider === 'desec') {
-        const res = await verifyDesecTokenRealTime(cleaned);
-        if (res.verified) {
-          onSaveDesecToken?.(cleaned);
-          setEditingKey(false);
-          setKeyStatusMsg(
-            `deSEC connected (${res.domainsCount} existing domain${res.domainsCount === 1 ? '' : 's'}). Claim any .dedyn.io domain below to register it live.`
-          );
-        }
-      } else {
-        const res = await verifyDynv6TokenRealTime(cleaned);
-        if (res.verified) {
-          onSaveDynv6Token?.(cleaned);
-          setEditingKey(false);
-          setKeyStatusMsg(
-            `Dynv6 connected (${res.zonesCount} existing zone${res.zonesCount === 1 ? '' : 's'}). Claim any .dynv6.net, .v6.rocks, or .dns.army domain below to register it live.`
-          );
-        }
-      }
-    } catch (err: any) {
-      setKeyErr(
-        err?.message ||
-          (keyProvider === 'desec'
-            ? 'Could not verify deSEC token. Check your DESEC_API_TOKEN.'
-            : 'Could not verify Dynv6 token. Copy your HTTP Token from dynv6.com/keys.')
-      );
-    } finally {
-      setVerifyingKey(false);
-    }
+  const refreshCapabilities = () => {
+    setCheckingCaps(true);
+    getDomainCapabilitiesRealTime()
+      .then((res) => {
+        setCaps(res);
+      })
+      .finally(() => {
+        setCapsLoaded(true);
+        setCheckingCaps(false);
+      });
   };
 
   useEffect(() => {
+    void desecToken;
+    void onSaveDesecToken;
+    void dynv6Token;
+    void onSaveDynv6Token;
     getTldStatsRealTime()
       .then((d) => {
         if (d.freeCount) setFreeTotal(d.freeCount);
         if (d.totalExtensions) setGlobalTotal(d.totalExtensions);
       })
       .catch(() => {});
-    getDomainCapabilitiesRealTime().then(setCaps).catch(() => {});
+    refreshCapabilities();
   }, []);
 
   const effectiveMode: 'free' | 'all' =
@@ -384,132 +352,64 @@ export const SearchView: React.FC<SearchViewProps> = ({
           </div>
         </div>
 
-        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600 space-y-2.5">
-          {(caps.desecConfigured || caps.dynv6Configured || desecToken || dynv6Token) && !editingKey ? (
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div className="flex items-start gap-2 text-emerald-800">
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+        <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
+          {!capsLoaded ? (
+            <div className="flex items-center gap-2 text-slate-500">
+              <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+              <span>Checking live DNS provisioning server status...</span>
+            </div>
+          ) : caps.desecConfigured || caps.dynv6Configured ? (
+            <div className="flex items-start gap-2 text-emerald-800">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <span>
+                <strong className="text-emerald-800">Instant Live Global DNS Active:</strong>{' '}
+                {caps.desecConfigured && (
+                  <>
+                    Claiming any <strong>.dedyn.io</strong> domain registers it automatically via <strong>deSEC</strong>.{' '}
+                  </>
+                )}
+                {caps.dynv6Configured && (
+                  <>
+                    Claiming <strong>.dynv6.net / .v6.rocks / .dns.army</strong> registers automatically via <strong>Dynv6</strong>.
+                  </>
+                )}
+              </span>
+            </div>
+          ) : !caps.apiReachable ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-amber-800">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
                 <span>
-                  <strong className="text-emerald-800">Live Global DNS API Active:</strong>{' '}
-                  {(caps.desecConfigured || desecToken) && (
-                    <>
-                      Claiming any <strong>.dedyn.io</strong> domain registers it automatically via <strong>deSEC</strong>.{' '}
-                    </>
-                  )}
-                  {(caps.dynv6Configured || dynv6Token) && (
-                    <>
-                      Claiming <strong>.dynv6.net / .v6.rocks / .dns.army</strong> registers automatically via <strong>Dynv6 (No ID)</strong>.
-                    </>
-                  )}
+                  Live server endpoint did not respond yet. If you just redeployed Vercel, hard-refresh your browser once to clear the old cache.
                 </span>
               </div>
-              {!(caps.desecConfigured && caps.dynv6Configured) && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setTokenInput('');
-                    setEditingKey(true);
-                  }}
-                  className="text-blue-600 hover:underline font-semibold shrink-0 self-start sm:self-auto cursor-pointer"
-                >
-                  Paste / Add Key
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={refreshCapabilities}
+                disabled={checkingCaps}
+                className="px-3 py-1.5 bg-white border border-amber-300 hover:bg-amber-50 text-amber-800 font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer shrink-0 self-start sm:self-auto"
+              >
+                <RefreshCw className={`w-3 h-3 ${checkingCaps ? 'animate-spin' : ''}`} />
+                <span>Retry</span>
+              </button>
             </div>
           ) : (
-            <div className="space-y-2.5">
-              <div className="flex items-start justify-between gap-2 flex-wrap">
-                <div className="flex items-start gap-2">
-                  <KeyRound className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-                  <div>
-                    <strong className="text-slate-900">100% Free Auto-Registration (No ID / Document Verification):</strong>{' '}
-                    Use your <strong>deSEC</strong> token (<code className="bg-white px-1 py-0.5 rounded border border-slate-200">DESEC_API_TOKEN</code> for <strong>.dedyn.io</strong>) or a free email-only{' '}
-                    <a
-                      href="https://dynv6.com/keys"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-blue-600 underline font-semibold"
-                    >
-                      Dynv6 HTTP Token
-                    </a>{' '}
-                    (<code className="bg-white px-1 py-0.5 rounded border border-slate-200">DYNV6_API_TOKEN</code> for <strong>.dynv6.net / .v6.rocks / .dns.army</strong>).
-                  </div>
-                </div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <Globe className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
+                <span>
+                  Automatic instant provisioning uses <strong>DESEC_API_TOKEN</strong> (.dedyn.io) or <strong>DYNV6_API_TOKEN</strong> (.dynv6.net) from your server environment variables. Standard DNS management and open domain checks work right now.
+                </span>
               </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setKeyProvider('desec');
-                    setTokenInput(desecToken || '');
-                    setKeyErr('');
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                    keyProvider === 'desec'
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-slate-700 border-slate-300'
-                  }`}
-                >
-                  deSEC Token (.dedyn.io)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setKeyProvider('dynv6');
-                    setTokenInput(dynv6Token || '');
-                    setKeyErr('');
-                  }}
-                  className={`px-3 py-1.5 rounded-lg text-[11px] font-semibold border cursor-pointer ${
-                    keyProvider === 'dynv6'
-                      ? 'bg-blue-600 text-white border-blue-600'
-                      : 'bg-white text-slate-700 border-slate-300'
-                  }`}
-                >
-                  Dynv6 Token (.dynv6.net · No ID)
-                </button>
-              </div>
-
-              <form onSubmit={handleConnectProviderKey} className="flex flex-col sm:flex-row gap-2">
-                <input
-                  type="password"
-                  value={tokenInput}
-                  onChange={(e) => setTokenInput(e.target.value)}
-                  placeholder={
-                    keyProvider === 'desec'
-                      ? 'Paste your deSEC API token here...'
-                      : 'Paste your free Dynv6 HTTP Token here...'
-                  }
-                  className="flex-1 bg-white border border-slate-300 focus:border-blue-600 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none"
-                />
-                <div className="flex items-center gap-2">
-                  <button
-                    type="submit"
-                    disabled={verifyingKey || tokenInput.trim().length < 6}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold rounded-xl inline-flex items-center gap-1.5 cursor-pointer shrink-0"
-                  >
-                    {verifyingKey && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                    <span>{verifyingKey ? 'Verifying...' : 'Connect Key'}</span>
-                  </button>
-                  {editingKey && (
-                    <button
-                      type="button"
-                      onClick={() => setEditingKey(false)}
-                      className="px-3 py-2 bg-white border border-slate-300 text-slate-700 text-xs font-semibold rounded-xl cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                  )}
-                </div>
-              </form>
-
-              {keyErr && <div className="text-red-600 font-medium">{keyErr}</div>}
-            </div>
-          )}
-
-          {keyStatusMsg && (
-            <div className="text-emerald-700 font-medium pt-1 border-t border-slate-200/80">
-              {keyStatusMsg}
+              <button
+                type="button"
+                onClick={refreshCapabilities}
+                disabled={checkingCaps}
+                className="px-3 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold rounded-lg inline-flex items-center gap-1.5 cursor-pointer shrink-0 self-start sm:self-auto"
+              >
+                <RefreshCw className={`w-3 h-3 ${checkingCaps ? 'animate-spin' : ''}`} />
+                <span>Recheck</span>
+              </button>
             </div>
           )}
         </div>

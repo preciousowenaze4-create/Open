@@ -5,7 +5,9 @@ import tls from 'tls';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 
-dotenv.config();
+if (!process.env.VERCEL) {
+  dotenv.config({ quiet: true });
+}
 
 const app = express();
 
@@ -325,6 +327,8 @@ function getDesecEnvToken(): string {
   return readEnvSecret(
     'DESEC_API_TOKEN',
     'DESEC_TOKEN',
+    'DESEC_API_KEY',
+    'DESEC_KEY',
     'VITE_DESEC_API_TOKEN',
     'NEXT_PUBLIC_DESEC_API_TOKEN'
   );
@@ -335,6 +339,8 @@ function getDynv6EnvToken(): string {
     'DYNV6_API_TOKEN',
     'DYNV6_TOKEN',
     'DYNV6_HTTP_TOKEN',
+    'DYNV6_API_KEY',
+    'DYNV6_KEY',
     'VITE_DYNV6_API_TOKEN',
     'NEXT_PUBLIC_DYNV6_API_TOKEN'
   );

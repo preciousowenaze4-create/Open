@@ -1,8 +1,8 @@
 {
-  "buildCommand": "vite build",
+  "buildCommand": "npm run build:api && vite build",
   "outputDirectory": "dist",
   "functions": {
-    "api/**/*.ts": {
+    "api/index.mjs": {
       "maxDuration": 10
     }
   },
@@ -22,7 +22,9 @@
     }
   ],
   "rewrites": [
-    { "source": "/site/(.*)", "destination": "/api/site/$1" },
+    { "source": "/api/(.*)", "destination": "/api/index?__vpath=$1" },
+    { "source": "/api", "destination": "/api/index" },
+    { "source": "/site/(.*)", "destination": "/api/index?__vsite=$1" },
     {
       "source": "/((?!api/|assets/|pwa-|apple-touch-icon|icon|manifest|sw|workbox).*)",
       "destination": "/index.html"

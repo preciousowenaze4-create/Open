@@ -240,15 +240,16 @@ function PortalAppContent() {
         domain: result.domain,
         desecToken: desecToken || undefined,
         dynv6Token: dynv6Token || undefined,
-      }).catch(() => ({
-        provisionedLive: false,
-        nameservers: [] as string[],
-        provider: result.providerLabel,
-        message: '',
-      }));
+      });
 
-      const isLiveRegistered = Boolean(prov?.provisionedLive);
-      const liveNameservers = isLiveRegistered && Array.isArray(prov.nameservers) ? prov.nameservers : [];
+      if (!prov?.provisionedLive) {
+        throw new Error(
+          prov?.message ||
+            `${result.domain} could not be registered live on global DNS. Try another available live domain.`
+        );
+      }
+
+      const liveNameservers = Array.isArray(prov.nameservers) ? prov.nameservers : [];
 
       const { data: domainRow, error: domErr } = await supabase
         .from('domains')
@@ -258,8 +259,8 @@ function PortalAppContent() {
           domain: result.domain,
           name: result.name,
           tld: result.tld,
-          provider_label: isLiveRegistered ? prov.provider || 'Dynv6 Live Global DNS' : result.providerLabel,
-          status: isLiveRegistered ? 'active' : 'pending_dns',
+          provider_label: prov.provider || result.providerLabel,
+          status: 'active',
           nameserver_mode: liveNameservers.length > 0 ? 'custom' : 'default',
           nameservers: liveNameservers,
           registrar_lock: true,
@@ -277,7 +278,7 @@ function PortalAppContent() {
           id: orderId,
           user_id: supabaseUser.id,
           domain: result.domain,
-          amount_label: result.isFree ? '$0.00 Free' : 'Draft (Registrar Required)',
+          amount_label: '$0.00 Free',
           status: 'completed',
         })
         .select('*')
@@ -292,22 +293,14 @@ function PortalAppContent() {
       setOrders((prev) => [mappedOrder, ...prev]);
       setActiveDomainId(domainId);
 
-      if (isLiveRegistered) {
-        setToast(
-          `${result.domain} is now LIVE on global DNS (${liveNameservers.join(', ')}). Paste your Vercel/host DNS records now.`
-        );
-        setTimeout(() => setToast(''), 7000);
-        setActiveSection('manage_dns');
-      } else {
-        setToast(
-          `${result.domain} saved to workspace. Note: register at its real registry/registrar before Cloudflare or Vercel can verify it.`
-        );
-        setTimeout(() => setToast(''), 7000);
-        setActiveSection('my_domains');
-      }
+      setToast(
+        `${result.domain} is now LIVE on global DNS (${liveNameservers.join(', ')}). Add your Vercel/hosting DNS records now.`
+      );
+      setTimeout(() => setToast(''), 7000);
+      setActiveSection('manage_dns');
     } catch (err: any) {
-      setToast(err?.message || 'Could not claim domain. Check your Supabase SQL tables.');
-      setTimeout(() => setToast(''), 4500);
+      setToast(err?.message || 'Could not register domain live on global DNS. Please try another name.');
+      setTimeout(() => setToast(''), 5500);
     } finally {
       setAcquiringDomain(null);
     }

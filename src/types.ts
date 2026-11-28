@@ -199,6 +199,10 @@ export type PortalSection =
 export type DomainSearchCategory =
   | 'all_free'
   | 'instant_live'
+  | 'dynv6_core'
+  | 'army_zones'
+  | 'navy_zones'
+  | 'desec_live'
   | 'popular_global'
   | 'tech_dev'
   | 'all_global';

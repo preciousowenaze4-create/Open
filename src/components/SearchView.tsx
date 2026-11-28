@@ -38,8 +38,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
   const [nextCursor, setNextCursor] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [totalExtensions, setTotalExtensions] = useState(0);
-  const [freeTotal, setFreeTotal] = useState(0);
-  const [globalTotal, setGlobalTotal] = useState(0);
+  const [freeTotal, setFreeTotal] = useState(6);
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
@@ -76,14 +75,12 @@ export const SearchView: React.FC<SearchViewProps> = ({
     getTldStatsRealTime()
       .then((d) => {
         if (d.freeCount) setFreeTotal(d.freeCount);
-        if (d.totalExtensions) setGlobalTotal(d.totalExtensions);
       })
       .catch(() => {});
     refreshCapabilities();
   }, []);
 
-  const effectiveMode: 'free' | 'all' =
-    domainType === 'all_free' || domainType === 'instant_live' ? 'free' : 'all';
+  const effectiveMode: 'free' | 'all' = 'free';
 
   useEffect(() => {
     const clean = appName.trim().toLowerCase().replace(/[^a-z0-9.-]/g, '');
@@ -194,26 +191,17 @@ export const SearchView: React.FC<SearchViewProps> = ({
     }
   };
 
-  const visibleCountLabel =
-    globalTotal > 0 ? `${globalTotal.toLocaleString()}+` : '9,000+';
-  const freeCountLabel =
-    freeTotal > 0 ? `${freeTotal.toLocaleString()}+` : '2,500+';
-
   const quickExtensions = [
-    '.dedyn.io',
     '.dynv6.net',
     '.v6.rocks',
     '.dns.army',
-    '.us.kg',
-    '.dpdns.org',
-    '.com',
-    '.net',
-    '.org',
-    '.io',
-    '.dev',
-    '.app',
-    '.ai',
+    '.v6.army',
+    '.dns.navy',
+    '.v6.navy',
+    '.dedyn.io',
   ];
+
+  const liveZoneCount = freeTotal > 0 ? freeTotal : caps.desecConfigured ? 7 : 6;
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 space-y-5">
@@ -232,10 +220,9 @@ export const SearchView: React.FC<SearchViewProps> = ({
       {/* Domain Search Box */}
       <div className="bg-white border border-slate-200 rounded-2xl p-6 space-y-5">
         <div>
-          <h1 className="text-2xl font-extrabold text-slate-900">Find Your Domain Name</h1>
+          <h1 className="text-2xl font-extrabold text-slate-900">Find Your Free Live Domain</h1>
           <p className="text-sm text-slate-600 mt-1">
-            Type your app name (or exact domain like <strong>mybrand.com</strong>) to check endless live-verified domains across{' '}
-            {freeCountLabel} open registries and {globalTotal > 0 ? globalTotal.toLocaleString() : '9,000+'} global extensions.
+            Type your app name to discover endless available domains that register <strong>100% live and free ($0.00)</strong> on global DNS the moment you tap <strong>Get Domain</strong>.
           </p>
         </div>
 
@@ -246,19 +233,22 @@ export const SearchView: React.FC<SearchViewProps> = ({
               type="text"
               value={appName}
               onChange={(e) => setAppName(e.target.value)}
-              placeholder="Enter app name or domain (e.g. veribox, shopflow.com)..."
+              placeholder="Enter your app or brand name (e.g. aicraft, shopflow)..."
               className="w-full bg-slate-50 border border-slate-300 focus:border-blue-600 focus:bg-white rounded-xl pl-10 pr-10 py-3 text-sm text-slate-900 placeholder-slate-400 focus:outline-none"
             />
             {loading && <Loader2 className="w-4 h-4 text-blue-600 animate-spin absolute right-3.5 top-3.5" />}
           </div>
 
-          <div className="relative w-full md:w-52">
+          <div className="relative w-full md:w-56">
             <Filter className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
             <input
               type="text"
               value={tldFilter}
-              onChange={(e) => setTldFilter(e.target.value)}
-              placeholder="Filter extension (.com, .dev)"
+              onChange={(e) => {
+                setTldFilter(e.target.value);
+                if (domainType !== 'all_free') setDomainType('all_free');
+              }}
+              placeholder="Filter (.dynv6.net, .v6.army)"
               className="w-full bg-slate-50 border border-slate-300 focus:border-blue-600 focus:bg-white rounded-xl pl-9 pr-3 py-3 text-xs text-slate-900 focus:outline-none"
             />
           </div>
@@ -266,10 +256,10 @@ export const SearchView: React.FC<SearchViewProps> = ({
 
         <div className="space-y-3 pt-2 border-t border-slate-100">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-semibold text-slate-700">Select Domain Type</span>
+            <span className="text-xs font-semibold text-slate-700">Select Live Domain Zone</span>
             {results.length > 0 && (
               <span className="text-xs text-slate-500 tabular-nums">
-                {results.length} real domains found
+                {results.length} instant-live domains ready
               </span>
             )}
           </div>
@@ -277,11 +267,11 @@ export const SearchView: React.FC<SearchViewProps> = ({
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
             {(
               [
-                { id: 'all_free', label: `Free Open ($0)`, sub: `${freeCountLabel} suffixes` },
-                { id: 'instant_live', label: 'Instant Live DNS', sub: '.dedyn.io / .dynv6.net' },
-                { id: 'popular_global', label: 'Global TLDs', sub: '.com, .net, .org, .co' },
-                { id: 'tech_dev', label: 'Tech & Apps', sub: '.io, .dev, .app, .ai' },
-                { id: 'all_global', label: `All (${visibleCountLabel})`, sub: 'Full IANA catalog' },
+                { id: 'all_free', label: 'All Live Free ($0)', sub: `${liveZoneCount} live zones` },
+                { id: 'dynv6_core', label: 'Dynv6 Classic', sub: '.dynv6.net / .v6.rocks' },
+                { id: 'army_zones', label: 'Army Zones', sub: '.dns.army / .v6.army' },
+                { id: 'navy_zones', label: 'Navy Zones', sub: '.dns.navy / .v6.navy' },
+                { id: 'desec_live', label: 'deSEC Zone', sub: '.dedyn.io' },
               ] as const
             ).map((cat) => {
               const active = domainType === cat.id;
@@ -322,11 +312,8 @@ export const SearchView: React.FC<SearchViewProps> = ({
                       setTldFilter('');
                     } else {
                       setTldFilter(ext);
-                      if (
-                        ['.com', '.net', '.org', '.io', '.dev', '.app', '.ai'].includes(ext) &&
-                        domainType === 'all_free'
-                      ) {
-                        setDomainType('all_global');
+                      if (domainType !== 'all_free') {
+                        setDomainType('all_free');
                       }
                     }
                   }}
@@ -363,14 +350,14 @@ export const SearchView: React.FC<SearchViewProps> = ({
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
               <span>
                 <strong className="text-emerald-800">Instant Live Global DNS Active:</strong>{' '}
-                {caps.desecConfigured && (
-                  <>
-                    Claiming any <strong>.dedyn.io</strong> domain registers it automatically via <strong>deSEC</strong>.{' '}
-                  </>
-                )}
                 {caps.dynv6Configured && (
                   <>
-                    Claiming <strong>.dynv6.net / .v6.rocks / .dns.army</strong> registers automatically via <strong>Dynv6</strong>.
+                    Claiming <strong>.dynv6.net / .v6.rocks / .dns.army / .v6.army / .dns.navy / .v6.navy</strong> registers automatically on real internet DNS via <strong>Dynv6</strong>.{' '}
+                  </>
+                )}
+                {caps.desecConfigured && (
+                  <>
+                    Claiming <strong>.dedyn.io</strong> registers automatically via <strong>deSEC</strong>.
                   </>
                 )}
               </span>
@@ -398,7 +385,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
               <div className="flex items-start gap-2">
                 <Globe className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
                 <span>
-                  Automatic instant provisioning uses <strong>DESEC_API_TOKEN</strong> (.dedyn.io) or <strong>DYNV6_API_TOKEN</strong> (.dynv6.net) from your server environment variables. Standard DNS management and open domain checks work right now.
+                  Automatic instant provisioning uses <strong>DYNV6_API_TOKEN</strong> (.dynv6.net / .v6.rocks / .dns.army / .v6.army / .dns.navy / .v6.navy) or <strong>DESEC_API_TOKEN</strong> (.dedyn.io) from your server environment variables.
                 </span>
               </div>
               <button
@@ -518,13 +505,9 @@ export const SearchView: React.FC<SearchViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 shrink-0 justify-between sm:justify-end">
-                  <span
-                    className={`text-xs font-bold ${
-                      item.isFree ? 'text-emerald-700' : 'text-amber-700'
-                    }`}
-                  >
-                    {item.isFree ? '$0.00 / Free' : 'ICANN Registrar'}
+              <div className="flex items-center gap-3 shrink-0 justify-between sm:justify-end">
+                  <span className="text-xs font-bold text-emerald-700">
+                    $0.00 / Free
                   </span>
                   <button
                     type="button"
@@ -535,7 +518,7 @@ export const SearchView: React.FC<SearchViewProps> = ({
                     {isAcquiring ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Adding...</span>
+                        <span>Claiming Live...</span>
                       </>
                     ) : (
                       <>
@@ -561,10 +544,8 @@ export const SearchView: React.FC<SearchViewProps> = ({
                 {loadingMore && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-600" />}
                 <span>
                   {loadingMore
-                    ? 'Pulling more available domains...'
-                    : totalExtensions > nextCursor
-                      ? `Load More Available Domains (${(totalExtensions - nextCursor).toLocaleString()}+ left)`
-                      : 'Load More Endless Live Variations'}
+                    ? 'Pulling more live domains...'
+                    : 'Load More Endless Live Variations'}
                 </span>
               </button>
             </div>

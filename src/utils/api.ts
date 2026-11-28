@@ -33,27 +33,17 @@ export async function fetchJson<T = any>(
 }
 
 const CURATED_FREE_OPEN_DOMAINS: { tld: string; providerLabel: string }[] = [
-  { tld: '.dedyn.io', providerLabel: 'deSEC Live Global DNS (Free API)' },
-  { tld: '.dynv6.net', providerLabel: 'Dynv6 Live Global DNS (Free · No ID)' },
-  { tld: '.v6.rocks', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
-  { tld: '.dns.army', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
-  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free · Cloudflare OK)' },
-  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain (Cloudflare OK)' },
-  { tld: '.qzz.io', providerLabel: 'DigitalPlat Subdomain (Free · Cloudflare OK)' },
-  { tld: '.duckdns.org', providerLabel: 'DuckDNS Free Live Subdomain' },
-  { tld: '.is-a.dev', providerLabel: 'Open Developer Registry (Free)' },
-  { tld: '.js.org', providerLabel: 'JS.org Open Registry (Free)' },
-  { tld: '.eu.org', providerLabel: 'EU.org Open Registry (Free)' },
-  { tld: '.pages.dev', providerLabel: 'Cloudflare Pages Hosting (Free)' },
-  { tld: '.workers.dev', providerLabel: 'Cloudflare Workers (Free)' },
-  { tld: '.github.io', providerLabel: 'GitHub Pages Hosting (Free)' },
-  { tld: '.netlify.app', providerLabel: 'Netlify Hosting (Free)' },
-  { tld: '.vercel.app', providerLabel: 'Vercel Hosting (Free)' },
-  { tld: '.onrender.com', providerLabel: 'Render Cloud Hosting (Free)' },
+  { tld: '.dynv6.net', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.v6.rocks', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.dns.army', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.v6.army', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.dns.navy', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.v6.navy', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.dedyn.io', providerLabel: 'deSEC Live Global DNS ($0 · Instant Live)' },
 ];
 
 export const DESEC_TLDS = ['.dedyn.io'];
-export const DYNV6_TLDS = ['.dynv6.net', '.v6.rocks', '.dns.army', '.v6.navy', '.dns.navy'];
+export const DYNV6_TLDS = ['.dynv6.net', '.v6.rocks', '.dns.army', '.v6.army', '.dns.navy', '.v6.navy'];
 
 export function isDesecDomainClient(domain: string): boolean {
   const clean = domain.toLowerCase().trim();
@@ -188,75 +178,16 @@ async function fetchBrowserIanaRootTlds(signal?: AbortSignal): Promise<string[]>
   }
 }
 
-async function loadBrowserPublicSuffixCatalog(signal?: AbortSignal): Promise<BrowserSuffixCatalog> {
-  const oneDay = 24 * 60 * 60 * 1000;
-  if (
-    cachedBrowserCatalog &&
-    cachedBrowserCatalog.allTargets.length > 500 &&
-    Date.now() - browserCatalogFetchedAt < oneDay
-  ) {
-    return cachedBrowserCatalog;
-  }
-
-  const sources = [
-    'https://publicsuffix.org/list/public_suffix_list.dat',
-    'https://raw.githubusercontent.com/publicsuffix/list/master/public_suffix_list.dat',
-  ];
-
-  const ianaPromise = fetchBrowserIanaRootTlds(signal);
-
-  for (const url of sources) {
-    try {
-      const resp = await fetch(url, { signal });
-      if (resp.ok) {
-        const [text, ianaExtras] = await Promise.all([resp.text(), ianaPromise]);
-        const catalog = parseBrowserPublicSuffixText(text);
-        if (ianaExtras.length > 0) {
-          const icannExisting = new Set(catalog.icannTlds);
-          const allExisting = new Set(catalog.allTargets.map((t) => t.tld));
-          for (const ext of ianaExtras) {
-            if (!icannExisting.has(ext)) {
-              icannExisting.add(ext);
-              catalog.icannTlds.push(ext);
-            }
-            if (!allExisting.has(ext)) {
-              allExisting.add(ext);
-              catalog.allTargets.push({
-                tld: ext,
-                isFree: false,
-                providerLabel: 'IANA / ICANN Official Extension',
-              });
-            }
-          }
-        }
-        if (catalog.allTargets.length > 500) {
-          cachedBrowserCatalog = catalog;
-          browserCatalogFetchedAt = Date.now();
-          return catalog;
-        }
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError') throw err;
-    }
-  }
-
-  const fallbackFree = CURATED_FREE_OPEN_DOMAINS.map((f) => ({
+async function loadBrowserPublicSuffixCatalog(_signal?: AbortSignal): Promise<BrowserSuffixCatalog> {
+  const liveFree = CURATED_FREE_OPEN_DOMAINS.map((f) => ({
     tld: f.tld,
     isFree: true,
     providerLabel: f.providerLabel,
   }));
-  const fallbackIcann = PRIORITY_GLOBAL_TLDS.map((t) => ({
-    tld: t,
-    isFree: false,
-    providerLabel: 'IANA / ICANN Official Extension',
-  }));
   return {
-    freeTargets: fallbackFree,
-    icannTlds: PRIORITY_GLOBAL_TLDS,
-    allTargets: [
-      ...fallbackIcann,
-      ...fallbackFree.filter((f) => !PRIORITY_GLOBAL_TLDS.includes(f.tld)),
-    ],
+    freeTargets: liveFree,
+    icannTlds: [],
+    allTargets: liveFree,
   };
 }
 
@@ -603,21 +534,17 @@ export async function searchDomainsRealTime(params: {
 
     const catalog = await loadBrowserPublicSuffixCatalog(params.signal);
     let targets =
-      params.domainType === 'instant_live'
-        ? catalog.freeTargets.filter((t) => isDesecDomainClient(t.tld) || isDynv6DomainClient(t.tld))
-        : params.domainType === 'popular_global'
-          ? catalog.allTargets.filter((t) => PRIORITY_GLOBAL_TLDS.includes(t.tld))
-          : params.domainType === 'tech_dev'
-            ? catalog.allTargets.filter((t) => TECH_DEV_BROWSER_TLDS.has(t.tld))
-            : params.domainType === 'all_global'
-              ? [...catalog.allTargets]
-              : params.domainType === 'all_free'
-                ? [...catalog.freeTargets]
-                : params.mode === 'free'
-                  ? [...catalog.freeTargets]
-                  : [...catalog.allTargets];
+      params.domainType === 'dynv6_core'
+        ? catalog.freeTargets.filter((t) => t.tld === '.dynv6.net' || t.tld === '.v6.rocks')
+        : params.domainType === 'army_zones'
+          ? catalog.freeTargets.filter((t) => t.tld === '.dns.army' || t.tld === '.v6.army')
+          : params.domainType === 'navy_zones'
+            ? catalog.freeTargets.filter((t) => t.tld === '.dns.navy' || t.tld === '.v6.navy')
+            : params.domainType === 'desec_live'
+              ? catalog.freeTargets.filter((t) => t.tld === '.dedyn.io')
+              : [...catalog.freeTargets];
 
-    if (explicitExt) {
+    if (explicitExt && (isDynv6DomainClient(explicitExt) || isDesecDomainClient(explicitExt))) {
       const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
       if (existingIdx > 0) {
         const [found] = targets.splice(existingIdx, 1);

@@ -79,27 +79,17 @@ function savePublishedSites(sites: Record<string, PublishedSite>) {
 const publishedSites = loadPublishedSites();
 
 const CURATED_FREE_OPEN_DOMAINS: { tld: string; providerLabel: string }[] = [
-  { tld: '.dedyn.io', providerLabel: 'deSEC Live Global DNS (Free API)' },
-  { tld: '.dynv6.net', providerLabel: 'Dynv6 Live Global DNS (Free · No ID)' },
-  { tld: '.v6.rocks', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
-  { tld: '.dns.army', providerLabel: 'Dynv6 Free Live Domain (No ID)' },
-  { tld: '.dpdns.org', providerLabel: 'DigitalPlat DNS (Free · Cloudflare OK)' },
-  { tld: '.us.kg', providerLabel: 'DigitalPlat Free Domain (Cloudflare OK)' },
-  { tld: '.qzz.io', providerLabel: 'DigitalPlat Subdomain (Free · Cloudflare OK)' },
-  { tld: '.duckdns.org', providerLabel: 'DuckDNS Free Live Subdomain' },
-  { tld: '.is-a.dev', providerLabel: 'Open Developer Registry (Free)' },
-  { tld: '.js.org', providerLabel: 'JS.org Open Registry (Free)' },
-  { tld: '.eu.org', providerLabel: 'EU.org Open Registry (Free)' },
-  { tld: '.pages.dev', providerLabel: 'Cloudflare Pages Hosting (Free)' },
-  { tld: '.workers.dev', providerLabel: 'Cloudflare Workers (Free)' },
-  { tld: '.github.io', providerLabel: 'GitHub Pages Hosting (Free)' },
-  { tld: '.netlify.app', providerLabel: 'Netlify Hosting (Free)' },
-  { tld: '.vercel.app', providerLabel: 'Vercel Hosting (Free)' },
-  { tld: '.onrender.com', providerLabel: 'Render Cloud Hosting (Free)' },
+  { tld: '.dynv6.net', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.v6.rocks', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.dns.army', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.v6.army', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.dns.navy', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.v6.navy', providerLabel: 'Dynv6 Live Global DNS ($0 · Instant Live)' },
+  { tld: '.dedyn.io', providerLabel: 'deSEC Live Global DNS ($0 · Instant Live)' },
 ];
 
 const DESEC_TLDS = new Set(['.dedyn.io']);
-const DYNV6_TLDS = new Set(['.dynv6.net', '.v6.rocks', '.dns.army', '.v6.navy', '.dns.navy']);
+const DYNV6_TLDS = new Set(['.dynv6.net', '.v6.rocks', '.dns.army', '.v6.army', '.dns.navy', '.v6.navy']);
 
 const PRIORITY_GLOBAL_TLDS = [
   '.com', '.net', '.org', '.io', '.dev', '.app', '.ai', '.co', '.xyz', '.tech',
@@ -532,6 +522,7 @@ async function checkRealDomainAvailability(
 const BRAND_PREFIXES = [
   'get', 'use', 'try', 'my', 'go', 'hey', 'join', 'meet', 'build', 'run',
   'open', 'cloud', 'next', 'pro', 'fast', 'live', 'real', 'true', 'super', 'team',
+  'app', 'web', 'hub', 'one', 'top', 'best', 'nova', 'sync', 'blue', 'peak',
 ];
 
 const BRAND_SUFFIXES = [
@@ -539,6 +530,7 @@ const BRAND_SUFFIXES = [
   'ai', 'go', 'live', 'online', 'site', 'zone', 'core', 'base', 'flow', 'sync',
   'link', 'now', 'box', 'bit', 'plus', 'next', 'one', 'x', 'studio', 'works',
   'space', 'world', 'net', 'sys', 'digital', 'stack', 'port', 'api', 'data', 'ops',
+  'pay', 'shop', 'store', 'host', 'grid', 'nest', 'mint', 'spark',
 ];
 
 function buildEndlessCandidate(
@@ -576,19 +568,58 @@ function buildEndlessCandidate(
   };
 }
 
-app.get('/api/domains/tlds/stats', async (_req, res) => {
-  const catalog = await getLivePublicSuffixCatalog();
+function getLiveSearchTargets(domainType: string, filterText: string, explicitExt: string) {
+  const caps = getDomainCapabilities();
+  const baseLive = CURATED_FREE_OPEN_DOMAINS.filter((item) => {
+    if (isDesecDomain(item.tld)) {
+      return caps.desecConfigured || domainType === 'desec_live' || filterText.includes('dedyn') || explicitExt === '.dedyn.io';
+    }
+    return true;
+  }).map((item) => ({
+    tld: item.tld,
+    isFree: true,
+    providerLabel: item.providerLabel,
+  }));
+
+  let targets = baseLive;
+  if (domainType === 'dynv6_core') {
+    targets = baseLive.filter((t) => t.tld === '.dynv6.net' || t.tld === '.v6.rocks');
+  } else if (domainType === 'army_zones') {
+    targets = baseLive.filter((t) => t.tld === '.dns.army' || t.tld === '.v6.army');
+  } else if (domainType === 'navy_zones') {
+    targets = baseLive.filter((t) => t.tld === '.dns.navy' || t.tld === '.v6.navy');
+  } else if (domainType === 'desec_live') {
+    targets = baseLive.filter((t) => t.tld === '.dedyn.io');
+  }
+
+  if (explicitExt && (isDynv6Domain(explicitExt) || isDesecDomain(explicitExt))) {
+    const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
+    if (existingIdx > 0) {
+      const [found] = targets.splice(existingIdx, 1);
+      targets.unshift(found);
+    }
+  }
+
+  if (filterText) {
+    targets = targets.filter(
+      (t) => t.tld.includes(filterText) || t.providerLabel.toLowerCase().includes(filterText)
+    );
+  }
+
+  return targets;
+}
+
+app.get('/api/domains/tlds/stats', (_req, res) => {
+  const caps = getDomainCapabilities();
+  const liveCount = CURATED_FREE_OPEN_DOMAINS.filter((d) =>
+    isDesecDomain(d.tld) ? caps.desecConfigured : true
+  ).length;
   res.json({
-    freeCount: catalog.freeTargets.length,
-    ianaTotalCount: catalog.icannTlds.length,
-    totalExtensions: catalog.allTargets.length,
+    freeCount: liveCount,
+    ianaTotalCount: liveCount,
+    totalExtensions: liveCount,
   });
 });
-
-const TECH_DEV_TLDS = new Set([
-  '.io', '.dev', '.app', '.ai', '.tech', '.cloud', '.so', '.is-a.dev', '.js.org',
-  '.pages.dev', '.workers.dev', '.github.io', '.vercel.app', '.netlify.app', '.dedyn.io',
-]);
 
 app.get('/api/domains/search', async (req, res) => {
   const rawQuery = ((req.query.q as string) || '').trim().toLowerCase();
@@ -611,44 +642,7 @@ app.get('/api/domains/search', async (req, res) => {
   const startCursor = Number.isFinite(rawCursor) && rawCursor >= 0 ? rawCursor : (page - 1) * limit;
   const filterText = ((req.query.tldFilter as string) || '').toLowerCase().trim();
 
-  const catalog = await getLivePublicSuffixCatalog();
-  let targets: { tld: string; isFree: boolean; providerLabel: string }[];
-
-  if (domainType === 'instant_live') {
-    targets = catalog.freeTargets.filter((t) => isDesecDomain(t.tld) || isDynv6Domain(t.tld));
-  } else if (domainType === 'popular_global') {
-    const prioritySet = new Set(PRIORITY_GLOBAL_TLDS);
-    targets = catalog.allTargets.filter((t) => prioritySet.has(t.tld));
-  } else if (domainType === 'tech_dev') {
-    targets = catalog.allTargets.filter((t) => TECH_DEV_TLDS.has(t.tld));
-  } else if (domainType === 'all_global') {
-    targets = [...catalog.allTargets];
-  } else if (domainType === 'all_free') {
-    targets = [...catalog.freeTargets];
-  } else {
-    targets = mode === 'free' ? [...catalog.freeTargets] : [...catalog.allTargets];
-  }
-
-  if (explicitExt) {
-    const existingIdx = targets.findIndex((t) => t.tld === explicitExt);
-    if (existingIdx > 0) {
-      const [found] = targets.splice(existingIdx, 1);
-      targets.unshift(found);
-    } else if (existingIdx === -1 && /^\.[a-z0-9-]+(\.[a-z0-9-]+){0,2}$/.test(explicitExt)) {
-      const isKnownIana = catalog.icannTlds.includes(explicitExt);
-      targets.unshift({
-        tld: explicitExt,
-        isFree: !isKnownIana,
-        providerLabel: isKnownIana ? 'IANA / ICANN Official Extension' : 'Live Custom Extension',
-      });
-    }
-  }
-
-  if (filterText) {
-    targets = targets.filter(
-      (t) => t.tld.includes(filterText) || t.providerLabel.toLowerCase().includes(filterText)
-    );
-  }
+  const targets = getLiveSearchTargets(domainType, filterText, explicitExt);
 
   if (targets.length === 0) {
     return res.json({
@@ -733,14 +727,7 @@ app.get('/api/domains/whois', async (req, res) => {
   try {
     const parts = cleanDomain.split('.');
     const rdapCandidate =
-      parts.length > 2 &&
-      (cleanDomain.endsWith('.dedyn.io') ||
-        cleanDomain.endsWith('.dynv6.net') ||
-        cleanDomain.endsWith('.v6.rocks') ||
-        cleanDomain.endsWith('.dns.army') ||
-        cleanDomain.endsWith('.us.kg') ||
-        cleanDomain.endsWith('.dpdns.org') ||
-        cleanDomain.endsWith('.qzz.io'))
+      parts.length > 2 && (isDesecDomain(cleanDomain) || isDynv6Domain(cleanDomain))
         ? parts.slice(-2).join('.')
         : cleanDomain;
 
@@ -1241,21 +1228,22 @@ app.post('/api/domains/provision', async (req, res) => {
     }
   }
 
-  return res.json({
+  return res.status(400).json({
     provisionedLive: false,
-    provider: 'External Registry Domain',
-    message:
-      'Pick a .dedyn.io domain (with DESEC_API_TOKEN) or a .dynv6.net / .v6.rocks / .dns.army domain (with DYNV6_API_TOKEN) for automatic 1-click live global registration.',
+    error:
+      'Only live auto-registering domains (.dynv6.net, .v6.rocks, .dns.army, .v6.army, .dns.navy, .v6.navy, or .dedyn.io) can be claimed directly here.',
   });
 });
 
 app.post('/api/dynv6/dns/upsert', async (req, res) => {
-  const { domain, type, host, value, dynv6Token } = req.body || {};
+  const { domain, type, host, value, priority, dynv6Token } = req.body || {};
   const cleanDomain = String(domain || '').toLowerCase().trim();
   const token = String(dynv6Token || getDynv6EnvToken()).trim();
 
   if (!isDynv6Domain(cleanDomain)) {
-    return res.status(400).json({ error: 'Live Dynv6 sync applies to .dynv6.net, .v6.rocks, and .dns.army zones.' });
+    return res.status(400).json({
+      error: 'Live Dynv6 sync applies to .dynv6.net, .v6.rocks, .dns.army, .v6.army, .dns.navy, and .v6.navy zones.',
+    });
   }
   if (!token) {
     return res.status(400).json({ error: 'DYNV6_API_TOKEN is missing in server environment variables.' });
@@ -1263,11 +1251,11 @@ app.post('/api/dynv6/dns/upsert', async (req, res) => {
 
   const cleanType = String(type || 'A').toUpperCase().trim();
   const cleanHost = String(host || '@').toLowerCase().trim();
-  const isApex = cleanHost === '@' || cleanHost === cleanDomain;
+  const isApex = cleanHost === '@' || cleanHost === '' || cleanHost === cleanDomain;
   const subname = isApex
-    ? cleanDomain
+    ? ''
     : cleanHost.replace(new RegExp(`\\.${cleanDomain.replace(/\./g, '\\.')}$`), '');
-  const cleanVal = String(value || '').trim();
+  const cleanVal = String(value || '').trim().replace(/\.+$/, '');
 
   try {
     const zones = await dynv6Fetch('/zones', token);
@@ -1284,7 +1272,7 @@ app.post('/api/dynv6/dns/upsert', async (req, res) => {
 
     const zoneId = zone.id;
 
-    // Apex A or AAAA records can also be updated directly on the zone object
+    // Apex A or AAAA records update directly on the Dynv6 zone object
     if (isApex && cleanType === 'A') {
       await dynv6Fetch(`/zones/${zoneId}`, token, {
         method: 'PATCH',
@@ -1298,35 +1286,40 @@ app.post('/api/dynv6/dns/upsert', async (req, res) => {
     }
 
     const existingRecords = await dynv6Fetch(`/zones/${zoneId}/records`, token).catch(() => []);
-    const targetRecName = isApex ? cleanDomain : subname;
+    const targetRecName = isApex ? '' : subname;
     const match = Array.isArray(existingRecords)
-      ? existingRecords.find(
-          (r: any) =>
-            String(r.type || '').toUpperCase() === cleanType &&
-            (String(r.name || '').toLowerCase() === targetRecName ||
-              (isApex && (r.name === '' || r.name === '@')))
-        )
+      ? existingRecords.find((r: any) => {
+          const rType = String(r.type || '').toUpperCase();
+          const rName = String(r.name || '').toLowerCase();
+          if (rType !== cleanType) return false;
+          if (isApex) {
+            return rName === '' || rName === '@' || rName === cleanDomain;
+          }
+          return rName === subname;
+        })
       : null;
 
     let resultRecord: any = null;
     if (!(isApex && (cleanType === 'A' || cleanType === 'AAAA'))) {
+      const recordPayload: Record<string, any> = {
+        name: targetRecName,
+        type: cleanType,
+        data: cleanVal,
+      };
+      if (cleanType === 'MX' || cleanType === 'SRV') {
+        recordPayload.priority =
+          typeof priority === 'number' && Number.isFinite(priority) ? priority : 10;
+      }
+
       if (match) {
         resultRecord = await dynv6Fetch(`/zones/${zoneId}/records/${match.id}`, token, {
           method: 'PATCH',
-          body: JSON.stringify({
-            name: targetRecName,
-            type: cleanType,
-            data: cleanVal,
-          }),
+          body: JSON.stringify(recordPayload),
         });
       } else {
         resultRecord = await dynv6Fetch(`/zones/${zoneId}/records`, token, {
           method: 'POST',
-          body: JSON.stringify({
-            name: targetRecName,
-            type: cleanType,
-            data: cleanVal,
-          }),
+          body: JSON.stringify(recordPayload),
         });
       }
     }
@@ -1354,7 +1347,7 @@ app.post('/api/dynv6/dns/delete', async (req, res) => {
 
     const cleanTypeUpper = String(type).toUpperCase().trim();
     const cleanHost = String(host || '@').toLowerCase().trim();
-    const isApex = cleanHost === '@' || cleanHost === cleanDomain;
+    const isApex = cleanHost === '@' || cleanHost === '' || cleanHost === cleanDomain;
 
     if (isApex && cleanTypeUpper === 'A') {
       await dynv6Fetch(`/zones/${zone.id}`, token, {
@@ -1369,16 +1362,19 @@ app.post('/api/dynv6/dns/delete', async (req, res) => {
     }
 
     const subname = isApex
-      ? cleanDomain
+      ? ''
       : cleanHost.replace(new RegExp(`\\.${cleanDomain.replace(/\./g, '\\.')}$`), '');
     const existingRecords = await dynv6Fetch(`/zones/${zone.id}/records`, token).catch(() => []);
     const match = Array.isArray(existingRecords)
-      ? existingRecords.find(
-          (r: any) =>
-            String(r.type || '').toUpperCase() === cleanTypeUpper &&
-            (String(r.name || '').toLowerCase() === subname ||
-              (isApex && (r.name === '' || r.name === '@')))
-        )
+      ? existingRecords.find((r: any) => {
+          const rType = String(r.type || '').toUpperCase();
+          const rName = String(r.name || '').toLowerCase();
+          if (rType !== cleanTypeUpper) return false;
+          if (isApex) {
+            return rName === '' || rName === '@' || rName === cleanDomain;
+          }
+          return rName === subname;
+        })
       : null;
 
     if (match) {
